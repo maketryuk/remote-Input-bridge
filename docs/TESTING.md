@@ -5,8 +5,11 @@ sender lets the whole receiver side be tested before a Windows build exists.
 
 ```bash
 # terminal 1 - receiver with a visible log
-mac-receiver/build/RemoteInputBridge.app/Contents/MacOS/RemoteInputBridge --begin-pairing --log DEBUG
+/Applications/RemoteInputBridge.app/Contents/MacOS/RemoteInputBridge --begin-pairing --log DEBUG
 ```
+
+**Stop the Windows sender first.** Only one session exists at a time, and a newly authenticated
+sender replaces the previous one — leaving both running makes them kick each other in a loop.
 
 The pairing code is printed as `PAIRING CODE: XXXX-YYYY`.
 

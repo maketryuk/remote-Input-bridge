@@ -57,14 +57,31 @@ after deliberate 2 % packet loss.
 Requires Xcode command line tools (Swift 5.9+, macOS 13+).
 
 ```bash
-./scripts/build-mac-app.sh              # → mac-receiver/build/RemoteInputBridge.app
-open mac-receiver/build/RemoteInputBridge.app
+./scripts/build-mac-app.sh --install --run    # build → /Applications → launch
 ```
 
-To see the log, run the binary inside the bundle from a terminal instead:
+It lands in `/Applications/RemoteInputBridge.app`, so it shows up in Launchpad and Spotlight like
+any other app. `--install` alone skips the launch; no arguments at all builds into
+`mac-receiver/build/` without touching `/Applications`.
+
+Then grant **Accessibility**: System Settings → Privacy & Security → Accessibility → enable
+*RemoteInputBridge*. Without it `CGEventPost` fails silently — the app logs an explicit error when
+it notices the cursor is not following the events it posts.
+
+> **The grant does not survive a rebuild.** An ad-hoc signature is a hash of the bundle contents,
+> and macOS ties the permission to the signature — so after every rebuild the checkbox stays on
+> while the permission no longer applies. `--install` therefore clears the stale entry
+> (`tccutil reset Accessibility studio.lince.remoteinputbridge`) and you grant it once more.
+> To stop that happening, create a self-signed *Code Signing* certificate once in Keychain Access
+> (Certificate Assistant → Create a Certificate) and build with
+> `RIB_SIGN_IDENTITY="your cert name" ./scripts/build-mac-app.sh --install`.
+
+Logs always go to `~/Library/Logs/RemoteInputBridge.log`. To watch them live, or to run with a
+different level:
 
 ```bash
-mac-receiver/build/RemoteInputBridge.app/Contents/MacOS/RemoteInputBridge --log DEBUG
+tail -f ~/Library/Logs/RemoteInputBridge.log
+/Applications/RemoteInputBridge.app/Contents/MacOS/RemoteInputBridge --log DEBUG
 ```
 
 Useful flags: `--begin-pairing` (enable pairing mode and print the code, handy over SSH),
@@ -201,7 +218,9 @@ These are deliberate MVP boundaries, not bugs:
 
 | Symptom | Cause and fix |
 |---------|---------------|
-| Mac cursor does not move, everything else looks fine | Accessibility permission. The menu bar icon shows a warning triangle; use the button in the settings window. `CGEventPost` fails silently without it |
+| Mac cursor does not move, everything else looks fine | Accessibility permission. The menu bar icon shows a warning triangle and `~/Library/Logs/RemoteInputBridge.log` says so outright. `CGEventPost` fails silently without it |
+| Permission is enabled in System Settings but the app still says it is missing | The bundle was rebuilt, so its ad-hoc signature changed and the existing grant no longer matches. Run `tccutil reset Accessibility studio.lince.remoteinputbridge`, relaunch, grant again — or build with `RIB_SIGN_IDENTITY` (see above) |
+| The receiver keeps swapping between two senders | Only one session exists at a time and a newly authenticated sender replaces the previous one. Do not run `scripts/test-sender.py` while the real Windows sender is connected |
 | Windows says "not paired with this Mac yet" | The Mac has no key for this PC. Press *Show pairing code* on the Mac, then *Pair* on Windows |
 | "the Mac is not in pairing mode" | The code expires after three minutes and is consumed by a successful pairing. Generate a new one |
 | Connects, then drops every second | Heartbeat timeout: the Mac is not seeing frames. Check the firewall on the Mac and that TCP 47821 is reachable |

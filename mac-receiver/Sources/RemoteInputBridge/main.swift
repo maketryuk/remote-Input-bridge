@@ -26,14 +26,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         Log.info("Remote Input Bridge receiver starting")
+        // Start listening first: the permission dialog is modal, and a receiver that only opens
+        // its ports after someone clicks a button is a receiver that looks broken.
+        model.start()
         if !Permissions.canPostEvents {
             Log.warn("Accessibility permission missing: input cannot be injected yet")
             Permissions.request()
             if options.showPermissionPrompt {
-                presentPermissionAlert()
+                DispatchQueue.main.async { [weak self] in self?.presentPermissionAlert() }
             }
         }
-        model.start()
         if options.beginPairing {
             model.beginPairing()
             // Printed rather than only shown in the UI so a headless or scripted setup works.

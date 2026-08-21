@@ -29,6 +29,14 @@ final class InputInjector {
     private var residualX: Double = 0
     private var residualY: Double = 0
 
+    /// Set once we have proof that posted events are being dropped by the system.
+    private var injectionVerified = false
+    private var injectionWarned = false
+    private var postsSinceCheck = 0
+    private var frozenSamples = 0
+    private var lastActualPosition = CGPoint.zero
+    private var lastExpectedPosition = CGPoint.zero
+
     private var lastClickTime: [UInt8: TimeInterval] = [:]
     private var lastClickPosition: [UInt8: CGPoint] = [:]
     private var clickCounts: [UInt8: Int64] = [:]
@@ -130,7 +138,67 @@ final class InputInjector {
         event.setIntegerValueField(.mouseEventDeltaY, value: deltaY)
         event.flags = currentFlags
         event.post(tap: .cghidEventTap)
+        verifyInjection(expected: clamped)
         return (clamped, pinnedRight)
+    }
+
+    /// Posting a CGEvent without Accessibility permission fails *silently*: no error, no
+    /// exception, just a cursor that never moves. This turns that into an actionable log line.
+    ///
+    /// The signal is a *frozen* cursor, not a lagging one: the real pointer updates a fraction of
+    /// a millisecond behind the post, so any position tolerance would produce false alarms at
+    /// several hundred events per second. A cursor that reads back byte-identical across two
+    /// samples while we asked it to travel a long way has genuinely not moved.
+    private func verifyInjection(expected: CGPoint) {
+        lock.lock()
+        if injectionVerified || injectionWarned {
+            lock.unlock()
+            return
+        }
+        postsSinceCheck += 1
+        guard postsSinceCheck >= 30 else {
+            lock.unlock()
+            return
+        }
+        postsSinceCheck = 0
+        let previousActual = lastActualPosition
+        let previousExpected = lastExpectedPosition
+        lock.unlock()
+
+        let actual = currentCursorPosition()
+        let requestedTravel = abs(expected.x - previousExpected.x) + abs(expected.y - previousExpected.y)
+        let observedTravel = abs(actual.x - previousActual.x) + abs(actual.y - previousActual.y)
+
+        lock.lock()
+        lastActualPosition = actual
+        lastExpectedPosition = expected
+        if previousExpected == .zero {
+            lock.unlock()
+            return // first sample only establishes the baseline
+        }
+        if observedTravel > 0 {
+            injectionVerified = true
+            lock.unlock()
+            return
+        }
+        guard requestedTravel > 20 else {
+            lock.unlock()
+            return // not enough movement asked for to conclude anything
+        }
+        frozenSamples += 1
+        let warn = frozenSamples >= 2
+        if warn { injectionWarned = true }
+        lock.unlock()
+
+        if warn {
+            Log.error("""
+                the cursor is not moving even though \(30 * 2) mouse events were posted \
+                (asked for \(Int(requestedTravel)) points of travel). This is exactly what a \
+                missing Accessibility permission looks like: CGEventPost fails silently. Grant it \
+                to this app bundle in System Settings > Privacy & Security > Accessibility, then \
+                relaunch the receiver.
+                """)
+        }
     }
 
     private func dragTypeLocked() -> CGEventType? {
