@@ -83,7 +83,14 @@ PLIST
 # "Code Signing") and point this at it:
 #
 #     RIB_SIGN_IDENTITY="Remote Input Bridge Local" ./scripts/build-mac-app.sh --install
-IDENTITY="${RIB_SIGN_IDENTITY:--}"
+IDENTITY="${RIB_SIGN_IDENTITY:-}"
+if [ -z "$IDENTITY" ]; then
+    # Prefer a real identity when one is available: it keeps the Accessibility grant across
+    # rebuilds, which an ad-hoc signature cannot do.
+    IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
+        | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' | head -1)"
+    IDENTITY="${IDENTITY:--}"
+fi
 if codesign --force --sign "$IDENTITY" --timestamp=none "$APP" >/dev/null 2>&1; then
     if [ "$IDENTITY" = "-" ]; then
         echo "    signed ad-hoc - macOS may ask for Accessibility permission again"
