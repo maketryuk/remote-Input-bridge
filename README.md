@@ -40,7 +40,8 @@ connected mouse, including a 1000 Hz gaming mouse.** Everything else is subordin
 | A 1000 Hz mouse produces 1000 events/s | `GetRawInputBuffer` drains events in batches; movement is two `fetch_add`s on cumulative counters, nothing more |
 | 1000 packets/s is a burst generator | A separate thread on a **high-resolution waitable timer** samples those counters every 1/2/4/8 ms and sends one packet (spec §9) |
 | A lost UDP packet must not shift the cursor forever | Packets carry **cumulative totals**, not deltas. The next packet to arrive re-establishes the truth on its own (spec §10.2) |
-| Bursty Wi-Fi delivery becomes visible stutter | The receiver coalesces everything that arrives inside one interval into a single `CGEvent` — no distance is lost, only invisible intermediate positions (spec §33) |
+| Bursty Wi-Fi delivery becomes visible stutter | The receiver coalesces everything that arrives inside one interval into a single `CGEvent`, then *spreads* it over the next few milliseconds and keeps moving through the gap that follows — measured on a real link, a third of all datagrams arrive inside the same millisecond as their predecessor (spec §33) |
+| Wi-Fi power saving turns gaps into clumps | While the Mac holds the input the sender emits a packet every tick even when the mouse is still, so the radio never dozes off between movements. ~22 kB/s while switched over, nothing while Windows has the input |
 | Double pointer acceleration | Windows sends **raw device counts**; the only scaling applied anywhere is one linear factor on the Mac (spec §55) |
 | Idle CPU | Nothing is sent when the mouse is still; no polling loop on either side |
 | A dead link leaving the user with no input | Every failure path — TCP close, heartbeat timeout, receiver crash, Wi-Fi loss, sleep — funnels through one fail-safe that returns input to Windows and releases every key on the Mac (spec §17, §18, §51) |
@@ -152,8 +153,13 @@ auto-connect, UDP on/off, diagnostics line, start with Windows. Stored in
 `%APPDATA%\RemoteInputBridge\config.json`.
 
 **Mac** (menu bar → *Settings…*): ports, device name, pointer speed, event scheduling mode
-(`immediate` / `coalesced` / `paced`), scroll mode and scaling, natural scrolling, modifier
-mapping, edge switching, heartbeat timeout, log level, start at login. Stored in
+(`smoothed` / `coalesced` / `paced` / `immediate`) and the smoothing window, scroll mode and
+scaling, natural scrolling, modifier mapping, edge switching, heartbeat timeout, log level, start
+at login.
+
+The scheduling modes exist to be compared on your own link: `immediate` is the lowest latency and
+the most exposed to jitter, `smoothed` (default, 10 ms) is the most even. Both extremes are one
+click apart, and the diagnostics line shows what each costs. Stored in
 `~/Library/Application Support/RemoteInputBridge/config.json`.
 
 Default modifier mapping is `Ctrl→Control`, `Alt→Option`, `Win→Command`, `Shift→Shift`; the first
@@ -233,7 +239,8 @@ These are deliberate MVP boundaries, not bugs:
 | "the Mac is not in pairing mode" | The code expires after three minutes and is consumed by a successful pairing. Generate a new one |
 | Connects, then drops every second | Heartbeat timeout: the Mac is not seeing frames. Check the firewall on the Mac and that TCP 47821 is reachable |
 | Cursor moves but far too slowly or quickly | Pointer speed on the Mac (Settings → Pointer). Windows sends raw counts, so Windows pointer speed has no effect by design |
-| Movement is smooth locally but stutters over Wi-Fi | Raise the mouse update interval to 4 ms, and check `loss` in the diagnostics line. Try scheduling mode `paced` for a display-synced cadence |
+| Movement is smooth locally but stutters over Wi-Fi | Check `jitter` in the diagnostics line. Above a few ms it is the link, not the app: prefer 5 GHz, get closer to the access point, or put the Mac on Ethernet. Then raise **Smoothing** (Settings → Pointer) until it is even — it absorbs roughly its own value in jitter |
+| Motion is smooth but feels coarse, in visible steps | Check `mouse in` in the diagnostics line. If it reads 125 Hz the mouse is at its default polling rate; set it to 1000 Hz in the mouse's own software and the steps get eight times finer |
 | A modifier appears stuck on the Mac | Should be impossible: every disconnect releases everything. If it happens, `Ctrl+Alt+→` then `Ctrl+Alt+←` re-syncs, and please report the log |
 | Windows input feels doubled while the Mac is active | Local suppression is off, or the foreground app reads Raw Input directly (see limitations) |
 

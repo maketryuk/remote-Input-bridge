@@ -203,11 +203,16 @@ final class AppModel: ObservableObject, ControlServerDelegate {
         let elapsed = max(now.timeIntervalSince(previousSampleTime), 0.001)
         previousSampleTime = now
 
-        let received = Double(snapshot.udpReceived &- previousSnapshot.udpReceived) / elapsed
-        let applied = Double(snapshot.appliedEvents &- previousSnapshot.appliedEvents) / elapsed
-        let coalesced = Double(snapshot.coalescedEvents &- previousSnapshot.coalescedEvents) / elapsed
-        let missing = Double(snapshot.udpMissing &- previousSnapshot.udpMissing) / elapsed
-        let reliable = Double(snapshot.reliableEvents &- previousSnapshot.reliableEvents) / elapsed
+        // Saturating, not wrapping: the counters reset when a session starts, and a wrapped
+        // difference would print an unsigned overflow as a rate of four billion hertz.
+        func rate<T: BinaryInteger>(_ current: T, _ previous: T) -> Double {
+            Double(current > previous ? current - previous : 0) / elapsed
+        }
+        let received = rate(snapshot.udpReceived, previousSnapshot.udpReceived)
+        let applied = rate(snapshot.appliedEvents, previousSnapshot.appliedEvents)
+        let coalesced = rate(snapshot.coalescedEvents, previousSnapshot.coalescedEvents)
+        let missing = rate(snapshot.udpMissing, previousSnapshot.udpMissing)
+        let reliable = rate(snapshot.reliableEvents, previousSnapshot.reliableEvents)
         previousSnapshot = snapshot
 
         let total = received + missing

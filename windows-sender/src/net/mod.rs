@@ -66,6 +66,7 @@ struct TransportKey {
     udp_port: u16,
     interval_ms: u32,
     use_udp: bool,
+    keepalive_stream: bool,
 }
 
 fn transport_key(cfg: &crate::config::Config) -> TransportKey {
@@ -75,6 +76,7 @@ fn transport_key(cfg: &crate::config::Config) -> TransportKey {
         udp_port: cfg.udp_port,
         interval_ms: cfg.mouse_interval_ms,
         use_udp: cfg.use_udp,
+        keepalive_stream: cfg.keepalive_stream,
     }
 }
 
@@ -319,6 +321,7 @@ fn start_session(
             udp_addr: session.udp_addr,
             interval_us: cfg.mouse_interval_us(),
             use_udp: cfg.use_udp,
+            keepalive_stream: cfg.keepalive_stream,
         },
         stop_realtime.clone(),
     );

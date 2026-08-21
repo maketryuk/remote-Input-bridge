@@ -7,6 +7,9 @@ enum SchedulerMode: String, Codable, CaseIterable, Identifiable {
     case coalesced
     /// Post on a fixed cadence, by default the display refresh rate.
     case paced
+    /// Spread each arrival over a few milliseconds and keep moving through the gap that follows.
+    /// Costs a little latency, removes the tearing a jittery Wi-Fi link produces (default).
+    case smoothed
 
     var id: String { rawValue }
     var label: String {
@@ -14,6 +17,7 @@ enum SchedulerMode: String, Codable, CaseIterable, Identifiable {
         case .immediate: return "Immediate"
         case .coalesced: return "Coalesced (recommended)"
         case .paced: return "Paced to display"
+        case .smoothed: return "Smoothed (recommended)"
         }
     }
 }
@@ -60,8 +64,11 @@ struct Config: Codable, Equatable {
     /// Windows sends raw, unaccelerated counts, so this is the only place pointer speed is
     /// scaled - which is exactly how double acceleration is avoided (spec §55).
     var pointerScale: Double = 1.0
-    var schedulerMode: SchedulerMode = .coalesced
+    var schedulerMode: SchedulerMode = .smoothed
     var minEventIntervalMs: Double = 1.0
+    /// How long the smoothed scheduler takes to play out one arrival. Roughly the amount of
+    /// network jitter it can absorb, and roughly the latency it adds.
+    var smoothingMs: Double = 10
     /// 0 means "follow the display refresh rate".
     var pacedRateHz: Double = 0
 
@@ -133,6 +140,7 @@ struct Config: Codable, Equatable {
         var copy = self
         copy.pointerScale = min(max(pointerScale, 0.1), 10)
         copy.minEventIntervalMs = min(max(minEventIntervalMs, 0), 16)
+        copy.smoothingMs = min(max(smoothingMs, 0), 60)
         copy.pacedRateHz = min(max(pacedRateHz, 0), 1000)
         copy.scrollLinesPerNotch = min(max(scrollLinesPerNotch, 0.1), 20)
         copy.scrollPixelsPerLine = min(max(scrollPixelsPerLine, 1), 100)

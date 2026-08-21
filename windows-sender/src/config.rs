@@ -31,6 +31,12 @@ pub struct Config {
     pub edge_switch: bool,
     /// Suppress local Windows input while the Mac owns the input (spec §20).
     pub suppress_local_input: bool,
+    /// Keep sending a movement packet every tick while the Mac holds the input, even when the
+    /// mouse has not moved. Wi-Fi radios enter power saving during gaps and then deliver the next
+    /// packets in a clump, which is what a user perceives as tearing; a steady cadence keeps the
+    /// link awake and makes arrival times uniform. Costs ~22 kB/s while switched over, nothing
+    /// while idle on Windows.
+    pub keepalive_stream: bool,
     /// Send movement over UDP. Turning this off falls back to MOUSE_MOVE_REL over TCP, which is
     /// useful when diagnosing whether jitter is a UDP problem (spec §53).
     pub use_udp: bool,
@@ -59,6 +65,7 @@ impl Default for Config {
             start_with_system: false,
             edge_switch: false,
             suppress_local_input: true,
+            keepalive_stream: true,
             use_udp: true,
             hotkey_switch_to_mac: "Ctrl+Alt+Left".into(),
             hotkey_switch_to_windows: "Ctrl+Alt+Right".into(),

@@ -299,6 +299,9 @@ def main():
     parser.add_argument("--circle", type=float, default=0, metavar="SECONDS",
                         help="move the cursor in a circle for N seconds")
     parser.add_argument("--radius", type=float, default=120)
+    parser.add_argument("--line", type=int, default=0, metavar="PIXELS",
+                        help="move right by exactly this many counts, in 1-count steps: the "
+                             "cursor must end up exactly that far along")
     parser.add_argument("--loss", type=float, default=0, metavar="PERCENT",
                         help="drop this share of movement packets on purpose")
     parser.add_argument("--click", action="store_true", help="left click once")
@@ -383,6 +386,20 @@ def main():
             # however long we waited, which is exactly the bug this tool is meant to find.
             drain_incoming(sender, stats)
             time.sleep(period)
+
+    if args.line:
+        last_ping = 0.0
+        for _ in range(args.line):
+            sender.send_move(1, 0, args.loss)
+            sent += 1
+            now = time.monotonic()
+            if now - last_ping > 0.3:
+                last_ping = now
+                sender.send_reliable(MSG_PING, struct.pack(">Q", sender.now_us()))
+            time.sleep(1.0 / args.rate)
+            drain_incoming(sender, stats)
+        # Let the receiver's playout finish before the caller measures the cursor.
+        time.sleep(0.5)
 
     if args.scroll:
         sender.send_reliable(MSG_SCROLL, struct.pack(">ii", 0, args.scroll * 120))

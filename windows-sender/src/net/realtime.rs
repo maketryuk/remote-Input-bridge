@@ -19,6 +19,7 @@ pub struct RealtimeParams {
     pub udp_addr: SocketAddr,
     pub interval_us: u32,
     pub use_udp: bool,
+    pub keepalive_stream: bool,
 }
 
 pub fn spawn(params: RealtimeParams, stop: Arc<AtomicBool>) -> JoinHandle<()> {
@@ -71,7 +72,11 @@ fn run(params: RealtimeParams, stop: Arc<AtomicBool>) {
             continue;
         }
 
-        if x != last_x || y != last_y {
+        // A packet on every tick, not only on movement: gaps are what let the Wi-Fi radio doze
+        // off and deliver the next few packets together. The payload is cumulative, so a
+        // "nothing changed" packet costs the receiver nothing - it computes a zero delta and
+        // posts no event.
+        if x != last_x || y != last_y || params.keepalive_stream {
             // Compute the delta before rebasing: the TCP fallback path needs it.
             let dx = x.wrapping_sub(last_x);
             let dy = y.wrapping_sub(last_y);

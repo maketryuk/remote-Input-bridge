@@ -134,7 +134,18 @@ struct SettingsView: View {
                 .labelsHidden()
                 .frame(width: 220)
             }
-            if model.config.schedulerMode == .coalesced {
+            if model.config.schedulerMode == .smoothed {
+                HStack {
+                    Text("Smoothing").frame(width: 150, alignment: .leading)
+                    Slider(value: model.binding(\.smoothingMs), in: 0...40, step: 1)
+                        .frame(width: 200)
+                    Text(String(format: "%.0f ms", model.config.smoothingMs))
+                        .font(.system(.body, design: .monospaced))
+                }
+                Text("Absorbs about this much network jitter, and adds about this much latency. Lower it on Ethernet, raise it on a busy Wi-Fi link.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if model.config.schedulerMode == .coalesced || model.config.schedulerMode == .smoothed {
                 HStack {
                     Text("Min event interval").frame(width: 150, alignment: .leading)
                     Slider(value: model.binding(\.minEventIntervalMs), in: 0...8, step: 0.5)
