@@ -204,10 +204,7 @@ fn spawn_telemetry() {
                 let snapshot = sampler.sample(&st.tel);
                 st.tel.publish(snapshot);
                 if st.config().diagnostics {
-                    println!(
-                        "{}",
-                        snapshot.render(st.link().label(), st.target().label())
-                    );
+                    log::info(&snapshot.render(st.link().label(), st.target().label()));
                 }
             }
         })

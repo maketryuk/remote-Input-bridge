@@ -20,6 +20,9 @@ pub enum ConnectError {
     /// The Mac is not currently showing a pairing code.
     PairingDisabled,
     BadPairingCode,
+    /// The Mac has a device key for us, but not the one we hold: the two sides diverged and only
+    /// a fresh pairing can fix it. Retrying with the stored key would loop forever.
+    AuthRejected,
     VersionMismatch(u32),
     Remote { code: String, message: String },
 }
@@ -34,6 +37,9 @@ impl std::fmt::Display for ConnectError {
                 write!(f, "the Mac is not in pairing mode (click Pair on the Mac first)")
             }
             ConnectError::BadPairingCode => write!(f, "wrong pairing code"),
+            ConnectError::AuthRejected => {
+                write!(f, "the Mac rejected our key - pair again (show a new code on the Mac)")
+            }
             ConnectError::VersionMismatch(v) => {
                 write!(f, "the Mac speaks protocol {v}, this build speaks {}", protocol::PROTOCOL_VERSION)
             }
@@ -62,6 +68,21 @@ impl Session {
     pub fn send(&mut self, msg: Reliable) -> io::Result<()> {
         self.send_counter += 1;
         let frame = encode_frame(&self.tcp_key, self.send_counter, msg);
+        self.stream.write_all(&frame)
+    }
+
+    /// Sends a message whose body is not a fixed-size `Reliable` (currently only log lines).
+    pub fn send_raw(&mut self, msg_type: u8, body: &[u8]) -> io::Result<()> {
+        self.send_counter += 1;
+        let mut signed = Vec::with_capacity(9 + body.len());
+        signed.extend_from_slice(&self.send_counter.to_be_bytes());
+        signed.push(msg_type);
+        signed.extend_from_slice(body);
+        let tag = crypto::hmac(&self.tcp_key, &signed);
+        let mut frame = Vec::with_capacity(4 + signed.len() + TAG_LEN);
+        frame.extend_from_slice(&((signed.len() + TAG_LEN) as u32).to_be_bytes());
+        frame.extend_from_slice(&signed);
+        frame.extend_from_slice(&tag[..TAG_LEN]);
         self.stream.write_all(&frame)
     }
 
@@ -213,6 +234,11 @@ pub fn connect(
         .ok_or_else(|| ConnectError::Protocol("HELLO_ACK carries no usable nonce".into()))?;
 
     let stored_key = keys.device_key(&cfg.mac_host);
+    // `freshly_paired` decides whether the key is persisted after AUTH_OK. Storing it earlier is
+    // what allows the two sides to diverge: if authentication never completes, one machine ends
+    // up holding a key the other has never heard of, and every later attempt fails with no way
+    // back except pairing again.
+    let mut freshly_paired = false;
     let device_key = match (ack.known_client, stored_key, pairing_code) {
         // Both sides already know each other: straight to AUTH.
         (true, Some(key), None) => key,
@@ -221,7 +247,8 @@ pub fn connect(
             if !ack.pairing_mode {
                 return Err(ConnectError::PairingDisabled);
             }
-            pair(&mut stream, code, &client_nonce, &server_nonce, cfg, keys)?
+            freshly_paired = true;
+            pair(&mut stream, code, &client_nonce, &server_nonce)?
         }
         // The Mac forgot us (or was reset): a fresh code is required.
         (false, _, None) => return Err(ConnectError::NeedsPairing),
@@ -231,7 +258,12 @@ pub fn connect(
     let proof = crypto::auth_proof(&device_key, &client_nonce, &server_nonce);
     write_json(&mut stream, &protocol::Auth { t: "AUTH", proof: crypto::hex_encode(&proof) })?;
 
-    let ok_text = expect_frame(&mut stream, "AUTH_OK")?;
+    let ok_text = match expect_frame(&mut stream, "AUTH_OK") {
+        Ok(text) => text,
+        // A rejected proof here is not a mistyped code - it means the stored key is stale.
+        Err(ConnectError::BadPairingCode) => return Err(ConnectError::AuthRejected),
+        Err(other) => return Err(other),
+    };
     let ok: protocol::AuthOk = serde_json::from_str(&ok_text)
         .map_err(|e| ConnectError::Protocol(format!("malformed AUTH_OK: {e}")))?;
     let expected =
@@ -240,6 +272,15 @@ pub fn connect(
     if !crypto::ct_eq(&expected, &got) {
         // Mutual authentication: refuse to type into a host that cannot prove it holds our key.
         return Err(ConnectError::Protocol("the Mac failed to prove it holds our device key".into()));
+    }
+
+    if freshly_paired {
+        // Both sides have now proven they hold the same key, so it is safe to keep.
+        keys.set_device_key(&cfg.mac_host, &device_key);
+        if let Err(e) = keys.save() {
+            crate::log::warn(&format!("could not persist the device key: {e}"));
+        }
+        crate::log::info("paired successfully; the code is not needed again");
     }
 
     let (tcp_key, udp_key) = crypto::session_keys(&device_key, &client_nonce, &server_nonce);
@@ -261,13 +302,12 @@ pub fn connect(
     })
 }
 
+/// Performs the pairing exchange and returns the unwrapped device key **without storing it**.
 fn pair(
     stream: &mut TcpStream,
     code: &str,
     client_nonce: &[u8],
     server_nonce: &[u8],
-    cfg: &Config,
-    keys: &mut KeyStore,
 ) -> Result<Key, ConnectError> {
     let pairing_key = crypto::derive_pairing_key(code);
     let proof = crypto::pair_proof(&pairing_key, client_nonce, server_nonce);
@@ -285,13 +325,7 @@ fn pair(
     if !crypto::ct_eq(&expected_tag, &got_tag) {
         return Err(ConnectError::BadPairingCode);
     }
-    let device_key = crypto::unwrap_device_key(&pairing_key, &wrapped);
-    keys.set_device_key(&cfg.mac_host, &device_key);
-    if let Err(e) = keys.save() {
-        crate::log::warn(&format!("could not persist the device key: {e}"));
-    }
-    crate::log::info("paired successfully; the code is not needed again");
-    Ok(device_key)
+    Ok(crypto::unwrap_device_key(&pairing_key, &wrapped))
 }
 
 #[cfg(test)]

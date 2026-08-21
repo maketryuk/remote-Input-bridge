@@ -27,6 +27,9 @@ enum Proto {
         case mouseMoveRelative = 0x0A
         case bye = 0x0B
         case edgeHit = 0x0C
+        /// Sender log line: the receiver's log file becomes the one place to look when debugging
+        /// a setup that spans two machines.
+        case log = 0x0D
     }
 
     /// Physical mouse buttons as numbered by the sender.
@@ -61,6 +64,7 @@ enum Proto {
         case mouseMoveRelative(dx: Int32, dy: Int32)
         case bye(reason: UInt8)
         case edgeHit(edge: UInt8)
+        case log(level: UInt8, text: String)
 
         var type: MessageType {
             switch self {
@@ -76,6 +80,7 @@ enum Proto {
             case .mouseMoveRelative: return .mouseMoveRelative
             case .bye: return .bye
             case .edgeHit: return .edgeHit
+            case .log: return .log
             }
         }
 
@@ -115,6 +120,9 @@ enum Proto {
                 body.append(reason)
             case let .edgeHit(edge):
                 body.append(edge)
+            case let .log(level, text):
+                body.append(level)
+                body.append(Data(text.utf8))
             }
             return body
         }
@@ -166,6 +174,10 @@ enum Proto {
             case .edgeHit:
                 guard body.count >= 1 else { return nil }
                 return .edgeHit(edge: body[body.startIndex])
+            case .log:
+                guard body.count >= 1 else { return nil }
+                let text = String(decoding: body.dropFirst(), as: UTF8.self)
+                return .log(level: body[body.startIndex], text: text)
             }
         }
     }

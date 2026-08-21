@@ -215,6 +215,61 @@ pub fn modifiers() -> u16 {
     with_tracker(|t| t.modifiers)
 }
 
+/// True while the low-level hooks are swallowing local input.
+///
+/// This is the pivot of the whole input design: an event swallowed by a low-level hook never
+/// becomes Raw Input for anyone, including this process. So while suppression is active the hooks
+/// are the only possible source for keys, buttons and wheel, and Raw Input must not also report
+/// them. Movement is the exception - it is never swallowed, precisely so that Raw Input keeps
+/// delivering unaccelerated high-rate deltas (the local cursor is pinned instead).
+pub fn hooks_own_discrete_events() -> bool {
+    hooks_active() && state().suppress.load(Relaxed)
+}
+
+/// Runs a key event through the tracker and forwards it when the Mac owns the input.
+///
+/// Never dispatches a hotkey itself: the caller does that *after* this returns, because
+/// dispatching takes the same lock this function holds.
+pub fn handle_key_event(hid: u16, down: bool) -> KeyDecision {
+    let st = state();
+    let decision = with_tracker(|t| t.on_key(hid, down, &hotkeys()));
+    st.modifiers.store(modifiers(), Relaxed);
+    if let KeyDecision::Forward { repeat } = decision {
+        if st.target() == Target::RemoteMac {
+            st.send(crate::net::NetMsg::Input(crate::protocol::Reliable::Key {
+                hid_usage: hid,
+                down,
+                repeat,
+            }));
+        }
+    }
+    decision
+}
+
+pub fn handle_button_event(index: u8, down: bool) -> KeyDecision {
+    let st = state();
+    let decision = with_tracker(|t| t.on_button(index as usize, down));
+    if matches!(decision, KeyDecision::Forward { .. }) && st.target() == Target::RemoteMac {
+        st.send(crate::net::NetMsg::Input(crate::protocol::Reliable::MouseButton {
+            button: index,
+            down,
+        }));
+    }
+    decision
+}
+
+/// Wheel deltas accumulate and are drained by the realtime tick, so a fast spin becomes a few
+/// big deltas instead of a hundred tiny frames.
+pub fn handle_scroll(units_x: i32, units_y: i32) {
+    let st = state();
+    if units_x != 0 {
+        st.scroll_x.fetch_add(units_x, Relaxed);
+    }
+    if units_y != 0 {
+        st.scroll_y.fetch_add(units_y, Relaxed);
+    }
+}
+
 pub fn dispatch(action: HotkeyAction) {
     let st = state();
     match action {
@@ -231,8 +286,12 @@ pub fn dispatch(action: HotkeyAction) {
 }
 
 /// Called by [`crate::state::AppState`] on every target transition.
-pub fn on_target_changed(_target: Target) {
+pub fn on_target_changed(target: Target) {
     with_tracker(|t| t.mark_all_stale());
+    #[cfg(windows)]
+    hooks::on_target_changed(target);
+    #[cfg(not(windows))]
+    let _ = target;
 }
 
 #[cfg(test)]

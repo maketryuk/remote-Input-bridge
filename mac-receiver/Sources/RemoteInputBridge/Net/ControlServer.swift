@@ -40,6 +40,9 @@ final class ControlServer {
         var clientID = ""
         var clientName = ""
         var deviceKey: Data?
+        /// A freshly generated key that is not in the key store yet: it is committed only once
+        /// the sender authenticates with it.
+        var pendingDeviceKey: Data?
         var tcpKey = Data()
         var udpKey = Data()
         var sessionID: UInt64 = 0
@@ -393,14 +396,15 @@ final class ControlServer {
                 serverNonce: peer.serverNonce,
                 wrapped: wrapped
             )
-            keyStore.setDeviceKey(clientID: peer.clientID, name: peer.clientName, key: deviceKey)
-            keyStore.save()
+            // Deliberately not stored yet. Committing here is what used to break pairing: if the
+            // sender rejected or failed to persist the response, this Mac was left holding a key
+            // the sender does not have, and every later AUTH failed with no way back except
+            // pairing again. The key is committed in the AUTH branch instead, and the code stays
+            // valid until then so a failed attempt can simply be retried.
+            peer.pendingDeviceKey = deviceKey
             peer.deviceKey = deviceKey
-            // One code pairs one machine; leaving it live would let a second host in.
-            pairingCodeValue = nil
-            pairingExpiry = .distantPast
             sendJSON(peer, ["t": "PAIR_RESPONSE", "wrapped_key": wrapped.hexString, "tag": tag.hexString])
-            Log.info("paired with \(peer.clientName)")
+            Log.info("sent a device key to \(peer.clientName); waiting for it to authenticate")
             delegate?.controlServerDidChangeStatus(self)
 
         case "AUTH":
@@ -415,8 +419,21 @@ final class ControlServer {
             )
             let provided = Data(hexString: object["proof"] as? String ?? "") ?? Data()
             guard Crypto.constantTimeEquals(expected, provided) else {
-                sendError(peer, code: "BAD_PROOF", message: "authentication failed")
+                sendError(
+                    peer,
+                    code: "BAD_PROOF",
+                    message: "\(peer.clientName) holds a different key for this Mac - pair again"
+                )
                 return
+            }
+            if let pending = peer.pendingDeviceKey {
+                // Now, and only now, is the pairing real on both sides.
+                keyStore.setDeviceKey(clientID: peer.clientID, name: peer.clientName, key: pending)
+                keyStore.save()
+                peer.pendingDeviceKey = nil
+                pairingCodeValue = nil
+                pairingExpiry = .distantPast
+                Log.info("paired with \(peer.clientName)")
             }
             var sessionID: UInt64 = 0
             let random = Crypto.randomData(8)
@@ -521,6 +538,16 @@ final class ControlServer {
                 udpReceived: snapshot.udpReceived,
                 udpDropped: snapshot.udpMissing
             ))
+            return
+        }
+        if case let .log(level, text) = message {
+            // Tagged with the sender's name so it is obvious which machine a line came from.
+            let line = "[\(peer.clientName)] \(text)"
+            switch level {
+            case 0: Log.error(line)
+            case 1: Log.warn(line)
+            default: Log.info(line)
+            }
             return
         }
         if case let .bye(reason) = message {

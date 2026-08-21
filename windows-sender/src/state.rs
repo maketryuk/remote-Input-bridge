@@ -86,6 +86,10 @@ pub struct AppState {
     pub modifiers: AtomicU16,
     /// Set once the UDP socket is bound and the session id is known.
     pub udp_ready: AtomicBool,
+    /// Hot copies of two config flags. The low-level hooks read them on every physical event, and
+    /// cloning the whole config there (five String allocations per mouse move) is not acceptable.
+    pub edge_switch: AtomicBool,
+    suppress_preference: AtomicBool,
     pub cfg: RwLock<Config>,
     pub keys: Mutex<KeyStore>,
     pub status: Mutex<Status>,
@@ -118,6 +122,8 @@ pub fn init_state(cfg: Config, keys: KeyStore, tx: Sender<NetMsg>) -> &'static A
         scroll_y: AtomicI32::new(0),
         modifiers: AtomicU16::new(0),
         udp_ready: AtomicBool::new(false),
+        edge_switch: AtomicBool::new(cfg.edge_switch),
+        suppress_preference: AtomicBool::new(cfg.suppress_local_input),
         cfg: RwLock::new(cfg),
         keys: Mutex::new(keys),
         status: Mutex::new(Status::default()),
@@ -152,6 +158,13 @@ impl AppState {
 
     pub fn config(&self) -> Config {
         self.cfg.read().unwrap().clone()
+    }
+
+    /// The only way config should be replaced: it keeps the hot atomics in step.
+    pub fn set_config(&self, cfg: Config) {
+        self.edge_switch.store(cfg.edge_switch, Ordering::Release);
+        self.suppress_preference.store(cfg.suppress_local_input, Ordering::Release);
+        *self.cfg.write().unwrap() = cfg;
     }
 
     pub fn set_link(&self, link: LinkState) {
@@ -189,7 +202,7 @@ impl AppState {
         }
         // Order matters: stop letting Windows see the input before telling the Mac to take over.
         let suppress = target == Target::RemoteMac
-            && self.cfg.read().unwrap().suppress_local_input;
+            && self.suppress_preference.load(Ordering::Acquire);
         self.suppress.store(suppress, Ordering::Release);
         crate::input::on_target_changed(target);
         self.send(NetMsg::TargetChanged(target));

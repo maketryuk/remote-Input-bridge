@@ -25,9 +25,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::input::{self, keymap, KeyDecision};
-use crate::net::NetMsg;
-use crate::protocol::{button, Reliable};
-use crate::state::{state, Target};
+use crate::protocol::button;
+use crate::state::state;
 
 /// 16 KiB holds roughly 340 mouse events, far more than a 1000 Hz mouse produces between two
 /// message-loop iterations. Declared as `u64` so the buffer is 8-byte aligned, which
@@ -144,6 +143,12 @@ fn handle_mouse(mouse: &RAWMOUSE) {
         st.total_y.fetch_add(mouse.lLastY, Relaxed);
     }
 
+    // Buttons and wheel come from the hook while suppression is active: the hook swallowed them,
+    // so Raw Input never sees them, and reporting them from both sources would double-click.
+    if input::hooks_own_discrete_events() {
+        return;
+    }
+
     let buttons = unsafe { mouse.Anonymous.Anonymous };
     let flags = buttons.usButtonFlags as u32;
     if flags == 0 {
@@ -175,16 +180,16 @@ fn handle_mouse(mouse: &RAWMOUSE) {
         if flags & flag == 0 {
             continue;
         }
-        let decision = input::with_tracker(|t| t.on_button(index as usize, down));
-        if matches!(decision, KeyDecision::Forward { .. }) && st.target() == Target::RemoteMac {
-            st.send(NetMsg::Input(Reliable::MouseButton { button: index, down }));
-        }
+        input::handle_button_event(index, down);
     }
 }
 
 fn handle_keyboard(key: &RAWKEYBOARD) {
     let st = state();
     st.tel.raw_kbd_events.fetch_add(1, Relaxed);
+    if input::hooks_own_discrete_events() {
+        return; // the keyboard hook is the source of truth while it is swallowing keys
+    }
 
     // 0xFF is the placeholder Windows uses for the first half of a multi-scan-code sequence.
     if key.VKey == 0xFF {
@@ -205,22 +210,11 @@ fn handle_keyboard(key: &RAWKEYBOARD) {
         return;
     }
 
-    let decision = input::with_tracker(|t| t.on_key(hid, down, &input::hotkeys()));
-    st.modifiers.store(input::modifiers(), Relaxed);
-
-    match decision {
-        KeyDecision::Hotkey(action) => {
-            // The hook normally dispatches (it can also swallow the keystroke). This branch is
-            // the safety net for when hook installation was refused.
-            if !input::hooks_active() {
-                input::dispatch(action);
-            }
-        }
-        KeyDecision::Drop => {}
-        KeyDecision::Forward { repeat } => {
-            if st.target() == Target::RemoteMac {
-                st.send(NetMsg::Input(Reliable::Key { hid_usage: hid, down, repeat }));
-            }
+    if let KeyDecision::Hotkey(action) = input::handle_key_event(hid, down) {
+        // The hook normally dispatches (it can also swallow the keystroke). This branch is the
+        // safety net for when hook installation was refused.
+        if !input::hooks_active() {
+            input::dispatch(action);
         }
     }
 }

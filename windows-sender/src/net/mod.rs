@@ -28,6 +28,8 @@ pub enum NetMsg {
     Reconnect,
     /// User typed a pairing code.
     Pair(String),
+    /// A log line to mirror onto the receiver, so one log file covers both machines.
+    LogLine(u8, String),
     /// Config was edited; reconnect if the transport parameters changed.
     ConfigChanged,
     Shutdown,
@@ -119,6 +121,15 @@ fn run(rx: Receiver<NetMsg>) {
                         connected_once = true;
                     }
                     Err(err) => {
+                        if matches!(err, ConnectError::AuthRejected) {
+                            // Drop the key we know to be wrong, so the next attempt asks for a
+                            // pairing code instead of retrying a proof that can never verify.
+                            let mut keys = st.keys.lock().unwrap();
+                            keys.device_keys.remove(&cfg.mac_host);
+                            if let Err(e) = keys.save() {
+                                crate::log::warn(&format!("could not clear the stale key: {e}"));
+                            }
+                        }
                         let text = err.to_string();
                         if text != last_reported_error {
                             crate::log::warn(&format!("connect failed: {text}"));
@@ -130,6 +141,7 @@ fn run(rx: Receiver<NetMsg>) {
                             ConnectError::NeedsPairing
                                 | ConnectError::PairingDisabled
                                 | ConnectError::BadPairingCode
+                                | ConnectError::AuthRejected
                         );
                         st.set_link(LinkState::Disconnected);
                         crate::ui::refresh();
@@ -170,6 +182,15 @@ fn run(rx: Receiver<NetMsg>) {
                     }
                 } else {
                     st.tel.dropped_no_link.fetch_add(1, Relaxed);
+                }
+            }
+            Ok(NetMsg::LogLine(level, text)) => {
+                if let Some(c) = conn.as_mut() {
+                    // Best effort: a failed log write must not tear down a working session.
+                    let mut body = Vec::with_capacity(1 + text.len());
+                    body.push(level);
+                    body.extend_from_slice(text.as_bytes());
+                    let _ = c.session.send_raw(crate::protocol::msg::LOG, &body);
                 }
             }
             Ok(NetMsg::TargetChanged(target)) => {

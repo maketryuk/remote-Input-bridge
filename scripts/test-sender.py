@@ -40,6 +40,7 @@ MSG_RELEASE_ALL = 0x09
 MSG_MOUSE_MOVE_REL = 0x0A
 MSG_BYE = 0x0B
 MSG_EDGE_HIT = 0x0C
+MSG_LOG = 0x0D
 
 KEYS_PATH = os.path.expanduser("~/.config/remote-input-bridge/test-sender-keys.json")
 
@@ -171,6 +172,7 @@ class Sender:
               f"pairing_mode={ack.get('pairing_mode')}")
 
         device_key = None
+        freshly_paired = False
         stored = keys.get("devices", {}).get(self.host)
         if pair_code:
             if not ack.get("pairing_mode"):
@@ -186,13 +188,18 @@ class Sender:
                 raise RuntimeError("wrong pairing code")
             mask = hkdf32(pk, b"rib-pair-v1", b"wrap")
             device_key = bytes(a ^ b for a, b in zip(wrapped, mask))
-            keys.setdefault("devices", {})[self.host] = device_key.hex()
-            save_keys(keys)
-            print("    paired; the device key is stored")
+            # Stored only after AUTH_OK below: committing here is what lets the two sides diverge
+            # if authentication never completes.
+            freshly_paired = True
+            print("    got a device key; authenticating before storing it")
         elif stored:
             device_key = bytes.fromhex(stored)
         else:
             raise RuntimeError("no stored key for this host: run once with --pair CODE")
+
+        if getattr(self, "abort_after_pair", False):
+            print("    aborting before AUTH on purpose")
+            raise SystemExit(0)
 
         proof = mac(device_key, b"auth" + client_nonce + server_nonce)
         self.send_json({"t": "AUTH", "proof": proof.hex()})
@@ -203,6 +210,10 @@ class Sender:
                        + struct.pack(">Q", self.session_id))
         if not hmac.compare_digest(expected, bytes.fromhex(ok["server_proof"])):
             raise RuntimeError("the receiver could not prove it holds our device key")
+        if freshly_paired:
+            keys.setdefault("devices", {})[self.host] = device_key.hex()
+            save_keys(keys)
+            print("    paired; the device key is stored")
         self.tcp_key, self.udp_key = session_keys(device_key, client_nonce, server_nonce)
         self.udp_port = int(ok.get("udp_port") or self.udp_port)
         print(f"    session 0x{self.session_id:x}, udp port {self.udp_port}")
@@ -295,6 +306,11 @@ def main():
     parser.add_argument("--type", dest="type_text", metavar="TEXT",
                         help="type ASCII letters/digits/space")
     parser.add_argument("--handshake-only", action="store_true")
+    parser.add_argument("--abort-after-pair", action="store_true",
+                        help="drop the connection right after PAIR_RESPONSE, without "
+                             "authenticating: the Mac must keep the previous key")
+    parser.add_argument("--send-log", metavar="TEXT",
+                        help="forward a log line to the receiver's log file")
     parser.add_argument("--stuck-modifier", action="store_true",
                         help="hold left Shift and then hang: kill -9 this process to verify the "
                              "receiver releases it on heartbeat timeout (spec test 5)")
@@ -313,6 +329,7 @@ def main():
         return 0
 
     sender = Sender(args.host, args.tcp_port, args.udp_port, args.name)
+    sender.abort_after_pair = args.abort_after_pair
     print(f"==> connecting to {args.host}:{args.tcp_port}")
     sender.connect(args.pair)
     if args.handshake_only:
@@ -326,6 +343,10 @@ def main():
     sender.send_reliable(MSG_MODIFIER_SYNC, struct.pack(">H", 0))
     sender.send_reliable(MSG_TARGET_ACTIVE, b"\x01")
     print("==> the Mac now has the input")
+
+    if args.send_log:
+        sender.send_reliable(MSG_LOG, bytes([2]) + args.send_log.encode())
+        print("==> forwarded a log line")
 
     if args.stuck_modifier:
         sender.send_reliable(MSG_KEY, struct.pack(">HBB", 0xE1, 1, 0))

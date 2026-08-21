@@ -489,7 +489,7 @@ fn save_settings(parent: HWND) {
     if st.target() == Target::RemoteMac {
         st.suppress.store(cfg.suppress_local_input, Relaxed);
     }
-    *st.cfg.write().unwrap() = cfg.clone();
+    st.set_config(cfg.clone());
     if let Err(e) = cfg.save() {
         crate::log::warn(&format!("could not write config.json: {e}"));
     }
@@ -521,12 +521,11 @@ fn handle_command(parent: HWND, id: u32) {
         }
         cmd::OPEN_CONFIG_DIR => open_config_dir(),
         cmd::TOGGLE_EDGE => {
-            let enabled = {
-                let mut cfg = st.cfg.write().unwrap();
-                cfg.edge_switch = !cfg.edge_switch;
-                let _ = cfg.save();
-                cfg.edge_switch
-            };
+            let mut cfg = st.config();
+            cfg.edge_switch = !cfg.edge_switch;
+            let enabled = cfg.edge_switch;
+            let _ = cfg.save();
+            st.set_config(cfg);
             crate::log::info(&format!("edge switching {}", if enabled { "on" } else { "off" }));
             refresh_controls(parent);
         }
@@ -537,9 +536,10 @@ fn handle_command(parent: HWND, id: u32) {
             let index = (id - cmd::INTERVAL_BASE) as usize;
             if let Some(ms) = MOUSE_INTERVAL_CHOICES_MS.get(index).copied() {
                 {
-                    let mut cfg = st.cfg.write().unwrap();
+                    let mut cfg = st.config();
                     cfg.mouse_interval_ms = ms;
                     let _ = cfg.save();
+                    st.set_config(cfg);
                 }
                 crate::log::info(&format!("mouse interval set to {ms} ms"));
                 st.send(NetMsg::ConfigChanged);
@@ -594,6 +594,8 @@ unsafe extern "system" fn wnd_proc(
         WM_TIMER => {
             if wparam == REFRESH_TIMER {
                 refresh_status(window);
+                // The system clears the clip on focus changes, so it has to be re-applied.
+                hooks::refresh_cursor_clip();
             }
             0
         }

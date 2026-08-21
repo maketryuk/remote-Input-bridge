@@ -123,6 +123,12 @@ Windows                                     Mac
 `wrapped_key = device_key XOR HKDF(pairing_key, info="wrap")`
 `tag = HMAC-SHA256(pairing_key, "wrap" || client_nonce || server_nonce || wrapped_key)`
 
+**Neither side may store the new device key at this point.** Both commit it only after the `AUTH`
+exchange below succeeds with it. Committing on `PAIR_RESPONSE` lets the two sides diverge: if the
+sender never authenticates, the receiver is left holding a key the sender has never seen, and
+every later connection fails with `BAD_PROOF` and no way back except pairing again. The pairing
+code therefore stays valid until `AUTH` completes, so a failed attempt can simply be retried.
+
 ### AUTH (W → M)
 ```json
 { "t": "AUTH", "proof": "hex 32 B" }
@@ -143,6 +149,10 @@ Windows                                     Mac
 ```
 Codes: `VERSION_MISMATCH`, `NOT_PAIRED`, `PAIRING_DISABLED`, `BAD_PROOF`, `BUSY`, `PROTOCOL_ERROR`.
 
+A `BAD_PROOF` in reply to `AUTH` (rather than to `PAIR_REQUEST`) means the stored keys diverged.
+The sender discards its stored key in that case, so the next attempt asks for a pairing code
+instead of retrying a proof that can never verify.
+
 ---
 
 ## 4. Reliable messages (session phase)
@@ -161,6 +171,7 @@ Codes: `VERSION_MISMATCH`, `NOT_PAIRED`, `PAIRING_DISABLED`, `BAD_PROOF`, `BUSY`
 | `0x0A` | `MOUSE_MOVE_REL` | W→M | `i32 dx`, `i32 dy` — TCP fallback when UDP is disabled |
 | `0x0B` | `BYE` | both | `u8 reason` (0 user, 1 shutdown, 2 protocol error, 3 session replaced) |
 | `0x0C` | `EDGE_HIT` | M→W | `u8 edge` (1 = right edge) - only when edge switching is enabled |
+| `0x0D` | `LOG` | W→M | `u8 level` (0 error … 4 trace), then UTF-8 text. Mirrors the sender's log into the receiver's log file |
 
 Modifier mask bits: `0 LCtrl, 1 LShift, 2 LAlt, 3 LGui, 4 RCtrl, 5 RShift, 6 RAlt, 7 RGui`.
 

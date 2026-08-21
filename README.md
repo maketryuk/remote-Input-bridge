@@ -36,6 +36,7 @@ connected mouse, including a 1000 Hz gaming mouse.** Everything else is subordin
 
 | Problem | What this project does |
 |---------|------------------------|
+| A hook that hides local input also hides it from *us* | Movement is never swallowed, because a swallowed event never becomes Raw Input for anyone — that alone cost 99 % of the movement data. The local pointer is pinned with `ClipCursor` instead, while buttons, wheel and keys are swallowed by the hook and read from it |
 | A 1000 Hz mouse produces 1000 events/s | `GetRawInputBuffer` drains events in batches; movement is two `fetch_add`s on cumulative counters, nothing more |
 | 1000 packets/s is a burst generator | A separate thread on a **high-resolution waitable timer** samples those counters every 1/2/4/8 ms and sends one packet (spec §9) |
 | A lost UDP packet must not shift the cursor forever | Packets carry **cumulative totals**, not deltas. The next packet to arrive re-establishes the truth on its own (spec §10.2) |
@@ -75,6 +76,10 @@ it notices the cursor is not following the events it posts.
 > To stop that happening, create a self-signed *Code Signing* certificate once in Keychain Access
 > (Certificate Assistant → Create a Certificate) and build with
 > `RIB_SIGN_IDENTITY="your cert name" ./scripts/build-mac-app.sh --install`.
+
+**The sender's log is mirrored into the receiver's**, so one file covers both machines — which is
+the only practical way to read Windows-side telemetry without sitting at the Windows machine.
+Lines from the sender are tagged with its name: `[WINDOWS-PC] diag link Connected …`.
 
 Logs always go to `~/Library/Logs/RemoteInputBridge.log`. To watch them live, or to run with a
 different level:
@@ -158,8 +163,9 @@ three are remappable (spec §15).
 
 ## Diagnostics
 
-Windows: the settings window shows two live lines, and `rib-sender.exe --diagnostics` prints a
-once-per-second table to the console:
+Windows: the settings window shows two live lines, the same line is written to
+`%APPDATA%\RemoteInputBridge\rib-sender.log` and forwarded to the Mac's log, and
+`rib-sender.exe --console` prints it to a console too:
 
 ```
 link Connected     target Mac      mouse in   1000 Hz  keys   0 Hz  net out   500 Hz (   2 Hz reliable)  25.9 kbit/s  loss  0.0%  rtt  2.51 ms  jitter 0.20 ms  mac events   498 Hz  reconnects 0
@@ -195,10 +201,11 @@ and the Mac on Wi-Fi is the tested configuration.
 
 These are deliberate MVP boundaries, not bugs:
 
-* **Games can still see local input.** Suppression uses documented user-space hooks
-  (`WH_MOUSE_LL` / `WH_KEYBOARD_LL`). An application that reads Raw Input or DirectInput
-  directly — which is most games, and anything behind an anti-cheat — is not affected by a
-  low-level hook. No kernel driver, no injection, no anti-cheat interference (spec §20, §21).
+* **Games can still see local input.** Suppression uses documented user-space mechanisms only:
+  the low-level hooks swallow buttons, wheel and keys, and the pointer is pinned with
+  `ClipCursor`. An application that reads Raw Input or DirectInput directly — which is most
+  games, and anything behind an anti-cheat — still sees device movement. No kernel driver, no
+  injection, no anti-cheat interference (spec §20, §21).
 * **Payloads are authenticated, not encrypted.** Every datagram and frame is HMAC-tagged with a
   per-session key and rejected on replay, so an unpaired device cannot inject input. Keystrokes
   are not confidential on the wire. Trusted LAN only; TLS/DTLS is v2.
@@ -220,6 +227,7 @@ These are deliberate MVP boundaries, not bugs:
 |---------|---------------|
 | Mac cursor does not move, everything else looks fine | Accessibility permission. The menu bar icon shows a warning triangle and `~/Library/Logs/RemoteInputBridge.log` says so outright. `CGEventPost` fails silently without it |
 | Permission is enabled in System Settings but the app still says it is missing | The bundle was rebuilt, so its ad-hoc signature changed and the existing grant no longer matches. Run `tccutil reset Accessibility studio.lince.remoteinputbridge`, relaunch, grant again — or build with `RIB_SIGN_IDENTITY` (see above) |
+| Windows says "the Mac rejected our key" |  The two sides held different device keys. The sender now discards a key the Mac refuses and asks to pair again; show a new code on the Mac and press Pair |
 | The receiver keeps swapping between two senders | Only one session exists at a time and a newly authenticated sender replaces the previous one. Do not run `scripts/test-sender.py` while the real Windows sender is connected |
 | Windows says "not paired with this Mac yet" | The Mac has no key for this PC. Press *Show pairing code* on the Mac, then *Pair* on Windows |
 | "the Mac is not in pairing mode" | The code expires after three minutes and is consumed by a successful pairing. Generate a new one |

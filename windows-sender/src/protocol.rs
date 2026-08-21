@@ -126,6 +126,9 @@ pub mod msg {
     pub const MOUSE_MOVE_REL: u8 = 0x0A;
     pub const BYE: u8 = 0x0B;
     pub const EDGE_HIT: u8 = 0x0C;
+    /// Sender log line, forwarded so the receiver's log file is the single place to look when
+    /// debugging a two-machine setup. Body: `u8 level`, then UTF-8 text.
+    pub const LOG: u8 = 0x0D;
 }
 
 pub mod button {
