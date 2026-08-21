@@ -21,9 +21,9 @@ use crate::state::{state, Target};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyAction {
-    SwitchToMac,
-    SwitchToWindows,
-    ForceLocal,
+    SwitchToMac = 1,
+    SwitchToWindows = 2,
+    ForceLocal = 3,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -215,17 +215,6 @@ pub fn modifiers() -> u16 {
     with_tracker(|t| t.modifiers)
 }
 
-/// True while the low-level hooks are swallowing local input.
-///
-/// This is the pivot of the whole input design: an event swallowed by a low-level hook never
-/// becomes Raw Input for anyone, including this process. So while suppression is active the hooks
-/// are the only possible source for keys, buttons and wheel, and Raw Input must not also report
-/// them. Movement is the exception - it is never swallowed, precisely so that Raw Input keeps
-/// delivering unaccelerated high-rate deltas (the local cursor is pinned instead).
-pub fn hooks_own_discrete_events() -> bool {
-    hooks_active() && state().suppress.load(Relaxed)
-}
-
 /// Runs a key event through the tracker and forwards it when the Mac owns the input.
 ///
 /// Never dispatches a hotkey itself: the caller does that *after* this returns, because
@@ -270,8 +259,26 @@ pub fn handle_scroll(units_x: i32, units_y: i32) {
     }
 }
 
+static LAST_DISPATCH_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static LAST_DISPATCH_ACTION: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+const DISPATCH_DEDUPE_US: u64 = 200_000;
+
+/// A hotkey can be recognised by either path, and both dispatch it.
+///
+/// That redundancy is deliberate: a low-level hook is *not* called for input going to a window of
+/// higher integrity level, so relying on the hook alone means the switch hotkeys stop working
+/// depending on which application happens to be focused. Raw Input has no such restriction. The
+/// price is that the same press may arrive twice, which this collapses.
 pub fn dispatch(action: HotkeyAction) {
     let st = state();
+    let now = st.now_us();
+    if LAST_DISPATCH_ACTION.load(Relaxed) == action as u8
+        && now.saturating_sub(LAST_DISPATCH_US.load(Relaxed)) < DISPATCH_DEDUPE_US
+    {
+        return;
+    }
+    LAST_DISPATCH_ACTION.store(action as u8, Relaxed);
+    LAST_DISPATCH_US.store(now, Relaxed);
     match action {
         HotkeyAction::SwitchToMac => {
             st.request_target(Target::RemoteMac);

@@ -34,13 +34,12 @@ use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, ClipCursor, GetCursorPos, GetSystemMetrics, SetWindowsHookExW,
     UnhookWindowsHookEx, HC_ACTION, KBDLLHOOKSTRUCT, LLKHF_INJECTED, LLMHF_INJECTED,
-    MSLLHOOKSTRUCT, SM_XVIRTUALSCREEN, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON1,
+    MSLLHOOKSTRUCT, SM_XVIRTUALSCREEN, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_MOUSEMOVE,
+    WM_SYSKEYDOWN,
 };
 
-use crate::input::{self, KeyDecision};
-use crate::protocol::{button, modmask};
+use crate::input;
+use crate::protocol::modmask;
 use crate::state::{state, Target};
 
 static KEYBOARD_HOOK: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(ptr::null_mut());
@@ -180,19 +179,11 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
                 return 1;
             }
 
-            if input::hooks_own_discrete_events() {
-                // The event stops here, so this is also where it has to be read from.
-                let hid = input::keymap::hid_usage(
-                    info.scanCode as u16,
-                    info.flags & 0x01 != 0, // LLKHF_EXTENDED, the hook's spelling of the E0 flag
-                    vk,
-                );
-                if hid != input::keymap::HID_NONE {
-                    // dispatch() must happen after the tracker lock is released.
-                    if let KeyDecision::Hotkey(action) = input::handle_key_event(hid, down) {
-                        input::dispatch(action);
-                    }
-                }
+            // Suppression only: the keystroke is hidden from Windows here, but it is Raw Input
+            // that reports it to the Mac. Measured on real hardware, a swallowed event still
+            // arrives as Raw Input - and unlike this hook, Raw Input is delivered whatever window
+            // has focus, so it is the one source that never silently stops.
+            if state().suppress.load(Relaxed) {
                 return 1;
             }
         }
@@ -204,11 +195,6 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
 // Mouse
 // ---------------------------------------------------------------------------
 
-/// `mouseData`'s high word: the wheel delta, or which X button was pressed.
-fn high_word(data: u32) -> u16 {
-    (data >> 16) as u16
-}
-
 unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code == HC_ACTION as i32 && lparam != 0 {
         let info = &*(lparam as *const MSLLHOOKSTRUCT);
@@ -216,35 +202,14 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
             let st = state();
             let message = wparam as u32;
 
-            if input::hooks_own_discrete_events() {
+            if st.suppress.load(Relaxed) {
                 let handled = match message {
                     // Movement is deliberately passed through: swallowing it would also stop
                     // Raw Input from delivering the deltas we forward. ClipCursor keeps the
                     // local pointer still instead.
                     WM_MOUSEMOVE => false,
-                    WM_LBUTTONDOWN => discrete_button(button::LEFT, true),
-                    WM_LBUTTONUP => discrete_button(button::LEFT, false),
-                    WM_RBUTTONDOWN => discrete_button(button::RIGHT, true),
-                    WM_RBUTTONUP => discrete_button(button::RIGHT, false),
-                    WM_MBUTTONDOWN => discrete_button(button::MIDDLE, true),
-                    WM_MBUTTONUP => discrete_button(button::MIDDLE, false),
-                    WM_XBUTTONDOWN | WM_XBUTTONUP => {
-                        let index = if high_word(info.mouseData) == XBUTTON1 {
-                            button::BACK
-                        } else {
-                            button::FORWARD
-                        };
-                        discrete_button(index, message == WM_XBUTTONDOWN)
-                    }
-                    WM_MOUSEWHEEL => {
-                        input::handle_scroll(0, high_word(info.mouseData) as i16 as i32);
-                        true
-                    }
-                    WM_MOUSEHWHEEL => {
-                        input::handle_scroll(high_word(info.mouseData) as i16 as i32, 0);
-                        true
-                    }
-                    _ => true, // anything else local windows should not see either
+                    // Buttons and wheel are hidden from Windows here and reported by Raw Input.
+                    _ => true,
                 };
                 if handled {
                     return 1;
@@ -265,7 +230,3 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
     CallNextHookEx(ptr::null_mut(), code, wparam, lparam)
 }
 
-fn discrete_button(index: u8, down: bool) -> bool {
-    input::handle_button_event(index, down);
-    true
-}

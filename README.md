@@ -36,7 +36,7 @@ connected mouse, including a 1000 Hz gaming mouse.** Everything else is subordin
 
 | Problem | What this project does |
 |---------|------------------------|
-| A hook that hides local input also hides it from *us* | Movement is never swallowed, because a swallowed event never becomes Raw Input for anyone — that alone cost 99 % of the movement data. The local pointer is pinned with `ClipCursor` instead, while buttons, wheel and keys are swallowed by the hook and read from it |
+| A hook that stops being called takes the input with it | Raw Input is the only source of input content, and the hooks only ever *hide* input from Windows. A low-level hook is not called for input aimed at a window of higher integrity level, so anything that depended on the hook would silently stop working depending on which application had focus. Raw Input has no such restriction |
 | A 1000 Hz mouse produces 1000 events/s | `GetRawInputBuffer` drains events in batches; movement is two `fetch_add`s on cumulative counters, nothing more |
 | 1000 packets/s is a burst generator | A separate thread on a **high-resolution waitable timer** samples those counters every 1/2/4/8 ms and sends one packet (spec §9) |
 | A lost UDP packet must not shift the cursor forever | Packets carry **cumulative totals**, not deltas. The next packet to arrive re-establishes the truth on its own (spec §10.2) |
@@ -243,7 +243,8 @@ These are deliberate MVP boundaries, not bugs:
 | Movement is smooth locally but stutters over Wi-Fi | Check `jitter` in the diagnostics line. Above a few ms it is the link, not the app: prefer 5 GHz, get closer to the access point, or put the Mac on Ethernet. Then raise **Smoothing** (Settings → Pointer) until it is even — it absorbs roughly its own value in jitter |
 | Motion is smooth but feels coarse, in visible steps | Check `mouse in` in the diagnostics line. If it reads 125 Hz the mouse is at its default polling rate; set it to 1000 Hz in the mouse's own software and the steps get eight times finer |
 | A modifier appears stuck on the Mac | Should be impossible: every disconnect releases everything. If it happens, `Ctrl+Alt+→` then `Ctrl+Alt+←` re-syncs, and please report the log |
-| Windows input feels doubled while the Mac is active | Local suppression is off, or the foreground app reads Raw Input directly (see limitations) |
+| Windows input feels doubled while the Mac is active | Local suppression is off, the foreground app reads Raw Input directly (see limitations), or the foreground window is elevated and this app is not — a low-level hook is skipped for higher-integrity windows. Run the sender as administrator to cover those. Forwarding to the Mac keeps working either way |
+| The mouse reports only 125 Hz | If it is behind a KVM switch, the KVM is very likely the limit — many run their HID emulation at 125 Hz regardless of the mouse. Plugging the mouse straight into the PC is the only way to get 1000 Hz through |
 
 ---
 

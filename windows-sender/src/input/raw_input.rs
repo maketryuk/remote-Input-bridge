@@ -199,25 +199,19 @@ fn handle_mouse(mouse: &RAWMOUSE) {
         st.total_y.fetch_add(mouse.lLastY, Relaxed);
     }
 
-    // Buttons and wheel come from the hook while suppression is active: the hook swallowed them,
-    // so Raw Input never sees them, and reporting them from both sources would double-click.
-    if input::hooks_own_discrete_events() {
-        return;
-    }
-
     let buttons = unsafe { mouse.Anonymous.Anonymous };
     let flags = buttons.usButtonFlags as u32;
     if flags == 0 {
         return;
     }
 
+    // usButtonData is a signed WHEEL_DELTA multiple; 120 == one notch. High-resolution mice
+    // report fractions of that, which is exactly the resolution we want to keep (spec §13).
     if flags & RI_MOUSE_WHEEL != 0 {
-        // usButtonData is a signed WHEEL_DELTA multiple; 120 == one notch. High-resolution mice
-        // report fractions of that, which is exactly the resolution we want to keep (spec §13).
-        st.scroll_y.fetch_add(buttons.usButtonData as i16 as i32, Relaxed);
+        input::handle_scroll(0, buttons.usButtonData as i16 as i32);
     }
     if flags & RI_MOUSE_HWHEEL != 0 {
-        st.scroll_x.fetch_add(buttons.usButtonData as i16 as i32, Relaxed);
+        input::handle_scroll(buttons.usButtonData as i16 as i32, 0);
     }
 
     const BUTTON_FLAGS: [(u32, u8, bool); 10] = [
@@ -243,9 +237,6 @@ fn handle_mouse(mouse: &RAWMOUSE) {
 fn handle_keyboard(key: &RAWKEYBOARD) {
     let st = state();
     st.tel.raw_kbd_events.fetch_add(1, Relaxed);
-    if input::hooks_own_discrete_events() {
-        return; // the keyboard hook is the source of truth while it is swallowing keys
-    }
 
     // 0xFF is the placeholder Windows uses for the first half of a multi-scan-code sequence.
     if key.VKey == 0xFF {
@@ -267,10 +258,8 @@ fn handle_keyboard(key: &RAWKEYBOARD) {
     }
 
     if let KeyDecision::Hotkey(action) = input::handle_key_event(hid, down) {
-        // The hook normally dispatches (it can also swallow the keystroke). This branch is the
-        // safety net for when hook installation was refused.
-        if !input::hooks_active() {
-            input::dispatch(action);
-        }
+        // Dispatch unconditionally. The hook may or may not have seen this press - it is skipped
+        // for input aimed at an elevated window - and dispatch() collapses the duplicate.
+        input::dispatch(action);
     }
 }

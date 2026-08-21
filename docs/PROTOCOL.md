@@ -175,6 +175,10 @@ instead of retrying a proof that can never verify.
 
 Modifier mask bits: `0 LCtrl, 1 LShift, 2 LAlt, 3 LGui, 4 RCtrl, 5 RShift, 6 RAlt, 7 RGui`.
 
+All of these are read from Raw Input on the sender, never from the low-level hooks: the hooks
+exist only to hide input from Windows, and they are not invoked for input aimed at a
+higher-integrity window.
+
 Keys are identified by **USB HID Keyboard/Keypad usage ID** (page 0x07) — a physical key
 identity, never a character (spec §14.1). The sender maps PS/2 set-1 scan codes to HID
 usages; the receiver maps HID usages to macOS virtual key codes.

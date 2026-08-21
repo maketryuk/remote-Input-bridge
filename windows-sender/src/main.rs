@@ -218,9 +218,19 @@ fn diagnose(snapshot: &telemetry::Snapshot) {
     use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
     static NO_MESSAGES: AtomicBool = AtomicBool::new(false);
     static NO_EVENTS: AtomicBool = AtomicBool::new(false);
+    static NO_SUPPRESSION: AtomicBool = AtomicBool::new(false);
 
-    if state::state().target() != state::Target::RemoteMac {
+    let st = state::state();
+    if st.target() != state::Target::RemoteMac {
         return;
+    }
+    if st.config().suppress_local_input && !input::hooks_active() && !NO_SUPPRESSION.swap(true, Relaxed)
+    {
+        log::warn(
+            "local input suppression is not active: the low-level hooks are not installed, so \
+             Windows will also act on everything sent to the Mac. Input forwarding itself is \
+             unaffected - it does not depend on the hooks.",
+        );
     }
     if snapshot.wm_input_hz < 1.0 {
         if !NO_MESSAGES.swap(true, Relaxed) {
@@ -230,7 +240,7 @@ fn diagnose(snapshot: &telemetry::Snapshot) {
                  until this is fixed.",
             );
         }
-    } else if snapshot.raw_mouse_hz < 1.0 && snapshot.wm_input_hz > 1.0 {
+    } else if snapshot.raw_mouse_hz + snapshot.raw_kbd_hz < 1.0 && snapshot.wm_input_hz > 1.0 {
         if !NO_EVENTS.swap(true, Relaxed) {
             log::error(
                 "WM_INPUT messages arrive but no mouse events can be read out of them - the raw \
