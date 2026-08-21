@@ -20,6 +20,7 @@ pub struct RealtimeParams {
     pub interval_us: u32,
     pub use_udp: bool,
     pub keepalive_stream: bool,
+    pub keepalive_interval_us: u64,
 }
 
 pub fn spawn(params: RealtimeParams, stop: Arc<AtomicBool>) -> JoinHandle<()> {
@@ -54,6 +55,7 @@ fn run(params: RealtimeParams, stop: Arc<AtomicBool>) {
     let mut sequence: u64 = 0;
     let mut last_x = st.total_x.load(Relaxed);
     let mut last_y = st.total_y.load(Relaxed);
+    let mut last_sent_us = 0u64;
     let trace = crate::log::trace_enabled();
 
     while !stop.load(Relaxed) {
@@ -72,11 +74,17 @@ fn run(params: RealtimeParams, stop: Arc<AtomicBool>) {
             continue;
         }
 
-        // A packet on every tick, not only on movement: gaps are what let the Wi-Fi radio doze
-        // off and deliver the next few packets together. The payload is cumulative, so a
+        // Movement always goes out immediately. On top of that a keep-alive packet goes out
+        // whenever the stream has been quiet for too long: gaps are what let the Wi-Fi radio doze
+        // off and deliver the next few packets in a clump. The payload is cumulative, so a
         // "nothing changed" packet costs the receiver nothing - it computes a zero delta and
         // posts no event.
-        if x != last_x || y != last_y || params.keepalive_stream {
+        let now_us = st.now_us();
+        let keepalive_due = params.keepalive_stream
+            && params.keepalive_interval_us > 0
+            && now_us.saturating_sub(last_sent_us) >= params.keepalive_interval_us;
+        if x != last_x || y != last_y || keepalive_due {
+            last_sent_us = now_us;
             // Compute the delta before rebasing: the TCP fallback path needs it.
             let dx = x.wrapping_sub(last_x);
             let dy = y.wrapping_sub(last_y);
@@ -88,7 +96,7 @@ fn run(params: RealtimeParams, stop: Arc<AtomicBool>) {
                     let packet = MouseMovePacket {
                         session_id: params.session_id,
                         sequence,
-                        timestamp_us: st.now_us(),
+                        timestamp_us: now_us,
                         total_x: x,
                         total_y: y,
                     }
@@ -112,7 +120,10 @@ fn run(params: RealtimeParams, stop: Arc<AtomicBool>) {
                 }
                 None => {
                     // TCP fallback carries deltas, since a reliable stream cannot skip one.
-                    st.send(crate::net::NetMsg::Input(Reliable::MouseMoveRel { dx, dy }));
+                    // A keep-alive is pointless here: TCP keeps its own connection alive.
+                    if dx != 0 || dy != 0 {
+                        st.send(crate::net::NetMsg::Input(Reliable::MouseMoveRel { dx, dy }));
+                    }
                 }
             }
         } else {

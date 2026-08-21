@@ -37,6 +37,13 @@ pub struct Config {
     /// link awake and makes arrival times uniform. Costs ~22 kB/s while switched over, nothing
     /// while idle on Windows.
     pub keepalive_stream: bool,
+    /// How long the stream may stay silent before a keep-alive packet is sent anyway.
+    ///
+    /// Sending on every tick keeps the radio awake but also turns a 125 Hz mouse into ~500 tiny
+    /// Wi-Fi frames per second, and on a weak link each frame costs airtime and invites retries -
+    /// which showed up as bursts of 28 % loss. A packet only when something changed, plus one
+    /// every 10 ms otherwise, keeps the radio just as awake for a third of the frames.
+    pub keepalive_interval_ms: u32,
     /// Send movement over UDP. Turning this off falls back to MOUSE_MOVE_REL over TCP, which is
     /// useful when diagnosing whether jitter is a UDP problem (spec §53).
     pub use_udp: bool,
@@ -66,6 +73,7 @@ impl Default for Config {
             edge_switch: false,
             suppress_local_input: true,
             keepalive_stream: true,
+            keepalive_interval_ms: 10,
             use_udp: true,
             hotkey_switch_to_mac: "Ctrl+Alt+Left".into(),
             hotkey_switch_to_windows: "Ctrl+Alt+Right".into(),
@@ -81,6 +89,7 @@ impl Config {
         if !MOUSE_INTERVAL_CHOICES_MS.contains(&self.mouse_interval_ms) {
             self.mouse_interval_ms = 2;
         }
+        self.keepalive_interval_ms = self.keepalive_interval_ms.clamp(0, 500);
         self.heartbeat_ms = self.heartbeat_ms.clamp(50, 5_000);
         self.heartbeat_timeout_ms = self.heartbeat_timeout_ms.clamp(self.heartbeat_ms * 2, 30_000);
         if self.device_name.trim().is_empty() {
