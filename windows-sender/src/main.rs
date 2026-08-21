@@ -214,6 +214,11 @@ fn spawn_telemetry() {
 
 /// Says out loud when the input pipeline is dead, instead of leaving it looking like a network
 /// problem. Each condition is reported once.
+///
+/// Deliberately keyed on lifetime totals rather than the per-second rate: a user who switches to
+/// the Mac and then simply does not touch the mouse produces the same zero rate as a broken
+/// pipeline, and a diagnostic that cries wolf is worse than none. "Nothing has *ever* arrived"
+/// cannot be confused with "nothing is happening right now".
 fn diagnose(snapshot: &telemetry::Snapshot) {
     use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
     static NO_MESSAGES: AtomicBool = AtomicBool::new(false);
@@ -224,6 +229,24 @@ fn diagnose(snapshot: &telemetry::Snapshot) {
     if st.target() != state::Target::RemoteMac {
         return;
     }
+    let _ = snapshot;
+    let messages = st.tel.wm_input_messages.load(Relaxed);
+    let events = st.tel.raw_mouse_events.load(Relaxed) + st.tel.raw_kbd_events.load(Relaxed);
+
+    if messages == 0 {
+        if !NO_MESSAGES.swap(true, Relaxed) {
+            log::error(
+                "the Mac has the input but not a single WM_INPUT message has ever arrived: Raw \
+                 Input is not being delivered to our window, so there is nothing to forward.",
+            );
+        }
+    } else if events == 0 && !NO_EVENTS.swap(true, Relaxed) {
+        log::error(
+            "WM_INPUT messages arrive but not one event could ever be read out of them - the raw \
+             input read path is failing.",
+        );
+    }
+
     if st.config().suppress_local_input && !input::hooks_active() && !NO_SUPPRESSION.swap(true, Relaxed)
     {
         log::warn(
@@ -231,22 +254,6 @@ fn diagnose(snapshot: &telemetry::Snapshot) {
              Windows will also act on everything sent to the Mac. Input forwarding itself is \
              unaffected - it does not depend on the hooks.",
         );
-    }
-    if snapshot.wm_input_hz < 1.0 {
-        if !NO_MESSAGES.swap(true, Relaxed) {
-            log::error(
-                "the Mac has the input but no WM_INPUT messages are arriving: Raw Input is not \
-                 being delivered to our window, so there is nothing to forward. Nothing will move \
-                 until this is fixed.",
-            );
-        }
-    } else if snapshot.raw_mouse_hz + snapshot.raw_kbd_hz < 1.0 && snapshot.wm_input_hz > 1.0 {
-        if !NO_EVENTS.swap(true, Relaxed) {
-            log::error(
-                "WM_INPUT messages arrive but no mouse events can be read out of them - the raw \
-                 input read path is failing.",
-            );
-        }
     }
 }
 
