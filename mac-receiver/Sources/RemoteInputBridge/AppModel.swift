@@ -218,7 +218,9 @@ final class AppModel: ObservableObject, ControlServerDelegate {
         )
         diagnostics = text
         if config.diagnostics {
-            print("[diag] \(text)")
+            // Through the logger, not print: a bundle launched from Finder has no stdout, and
+            // this line is the whole point of the diagnostics switch.
+            Log.info("diag \(text)")
         }
     }
 

@@ -90,7 +90,28 @@ struct Config: Codable, Equatable {
     static func load() -> Config {
         guard let data = try? Data(contentsOf: fileURL()) else { return Config() }
         do {
-            return try JSONDecoder().decode(Config.self, from: data).sanitized()
+            // Layer the file on top of the encoded defaults instead of decoding it directly.
+            // Swift's synthesised decoder treats every missing key as a hard error, which would
+            // mean a hand-edited file - or one written by a build that had fewer settings -
+            // silently reverts every other setting the user chose.
+            let stored = (try JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+            let defaultsData = try JSONEncoder().encode(Config())
+            var merged = (try JSONSerialization.jsonObject(with: defaultsData)) as? [String: Any] ?? [:]
+            for (key, value) in stored {
+                if var base = merged[key] as? [String: Any], let nested = value as? [String: Any] {
+                    for (nestedKey, nestedValue) in nested { base[nestedKey] = nestedValue }
+                    merged[key] = base
+                } else {
+                    merged[key] = value
+                }
+            }
+            let mergedData = try JSONSerialization.data(withJSONObject: merged)
+            let config = try JSONDecoder().decode(Config.self, from: mergedData).sanitized()
+            let unknown = Set(stored.keys).subtracting(merged.keys)
+            if !unknown.isEmpty {
+                Log.warn("ignoring unknown settings in config.json: \(unknown.sorted())")
+            }
+            return config
         } catch {
             Log.warn("config.json could not be read (\(error)); using defaults")
             return Config()

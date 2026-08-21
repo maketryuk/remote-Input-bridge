@@ -94,6 +94,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
         menu.addItem(.separator())
         add(menu, "Settings…", #selector(openSettings))
+        // macOS only lets a process post events if it had the permission when it started, so
+        // granting Accessibility always has to be followed by a relaunch.
+        add(menu, "Restart app", #selector(restartApp))
         menu.addItem(.separator())
         add(menu, "Quit Remote Input Bridge", #selector(quit))
     }
@@ -155,6 +158,22 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow = window
+    }
+
+    @objc private func restartApp() {
+        let bundle = Bundle.main.bundlePath
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/sh")
+        // The delay lets this process exit and release the ports before the new one binds them.
+        task.arguments = ["-c", "sleep 1; open -a \"\(bundle)\""]
+        do {
+            try task.run()
+        } catch {
+            Log.error("could not relaunch: \(error.localizedDescription)")
+            return
+        }
+        model.stop(reason: "restarting")
+        NSApp.terminate(nil)
     }
 
     @objc private func quit() {
