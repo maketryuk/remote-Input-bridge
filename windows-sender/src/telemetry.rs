@@ -9,6 +9,8 @@ use std::sync::Mutex;
 
 #[derive(Default)]
 pub struct Telemetry {
+    /// WM_INPUT messages received, regardless of whether any event could be read out of them.
+    pub wm_input_messages: AtomicU64,
     pub raw_mouse_events: AtomicU64,
     pub raw_kbd_events: AtomicU64,
     pub udp_packets_sent: AtomicU64,
@@ -32,6 +34,7 @@ pub struct Telemetry {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Snapshot {
+    pub wm_input_hz: f64,
     pub raw_mouse_hz: f64,
     pub raw_kbd_hz: f64,
     pub udp_send_hz: f64,
@@ -71,7 +74,7 @@ impl Telemetry {
 /// Per-second differencer: keeps the previous counter values and turns them into rates.
 #[derive(Default)]
 pub struct RateSampler {
-    prev: [u64; 8],
+    prev: [u64; 9],
     prev_instant: Option<std::time::Instant>,
 }
 
@@ -84,6 +87,7 @@ impl RateSampler {
 
         let cur = [
             tel.raw_mouse_events.load(Relaxed),
+            tel.wm_input_messages.load(Relaxed),
             tel.raw_kbd_events.load(Relaxed),
             tel.udp_packets_sent.load(Relaxed),
             tel.udp_bytes_sent.load(Relaxed),
@@ -92,7 +96,7 @@ impl RateSampler {
             tel.remote_applied.load(Relaxed),
             tel.remote_udp_dropped.load(Relaxed),
         ];
-        let mut delta = [0u64; 8];
+        let mut delta = [0u64; 9];
         for i in 0..cur.len() {
             delta[i] = cur[i].saturating_sub(self.prev[i]);
         }
@@ -100,20 +104,21 @@ impl RateSampler {
 
         // Loss is measured against what the receiver acknowledges having seen, not against a
         // local guess, so Wi-Fi drops show up honestly.
-        let sent = delta[2] as f64;
-        let received = delta[5] as f64;
+        let sent = delta[3] as f64;
+        let received = delta[6] as f64;
         let loss = if sent > 0.0 { ((sent - received) / sent * 100.0).clamp(0.0, 100.0) } else { 0.0 };
 
         Snapshot {
+            wm_input_hz: delta[1] as f64 / dt,
             raw_mouse_hz: delta[0] as f64 / dt,
-            raw_kbd_hz: delta[1] as f64 / dt,
+            raw_kbd_hz: delta[2] as f64 / dt,
             udp_send_hz: sent / dt,
-            udp_kbps: (delta[3] as f64 * 8.0 / 1000.0) / dt,
-            reliable_hz: delta[4] as f64 / dt,
+            udp_kbps: (delta[4] as f64 * 8.0 / 1000.0) / dt,
+            reliable_hz: delta[5] as f64 / dt,
             loss_percent: loss,
             rtt_ms: tel.rtt_ewma_us.load(Relaxed) as f64 / 1000.0,
             jitter_ms: tel.jitter_us.load(Relaxed) as f64 / 1000.0,
-            remote_event_hz: delta[6] as f64 / dt,
+            remote_event_hz: delta[7] as f64 / dt,
             reconnects: tel.reconnects.load(Relaxed),
         }
     }
@@ -123,9 +128,10 @@ impl Snapshot {
     pub fn render(&self, link: &str, target: &str) -> String {
         format!(
             "link {link:<13} target {target:<8} \
-             mouse in {:>6.0} Hz  keys {:>3.0} Hz  net out {:>5.0} Hz ({:>4.0} Hz reliable) \
+             wm_input {:>6.0} Hz  mouse in {:>6.0} Hz  keys {:>3.0} Hz  net out {:>5.0} Hz ({:>4.0} Hz reliable) \
              {:>5.1} kbit/s  loss {:>4.1}%  rtt {:>5.2} ms  jitter {:>4.2} ms  \
              mac events {:>5.0} Hz  reconnects {}",
+            self.wm_input_hz,
             self.raw_mouse_hz,
             self.raw_kbd_hz,
             self.udp_send_hz,

@@ -12,10 +12,11 @@ use windows_sys::Win32::Devices::HumanInterfaceDevice::{
     HID_USAGE_GENERIC_KEYBOARD, HID_USAGE_GENERIC_MOUSE, HID_USAGE_PAGE_GENERIC,
 };
 use windows_sys::Win32::Foundation::{GetLastError, HWND};
+use windows_sys::Win32::Foundation::LPARAM;
 use windows_sys::Win32::UI::Input::{
-    GetRawInputBuffer, RegisterRawInputDevices, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER,
-    RAWKEYBOARD, RAWMOUSE, MOUSE_MOVE_ABSOLUTE, RIDEV_INPUTSINK, RIM_TYPEKEYBOARD,
-    RIM_TYPEMOUSE,
+    GetRawInputBuffer, GetRawInputData, RegisterRawInputDevices, HRAWINPUT, RAWINPUT,
+    RAWINPUTDEVICE, RAWINPUTHEADER, RAWKEYBOARD, RAWMOUSE, MOUSE_MOVE_ABSOLUTE, RID_INPUT,
+    RIDEV_INPUTSINK, RIM_TYPEKEYBOARD, RIM_TYPEMOUSE,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     RI_KEY_BREAK, RI_KEY_E0, RI_KEY_E1, RI_MOUSE_BUTTON_4_DOWN, RI_MOUSE_BUTTON_4_UP, RI_MOUSE_BUTTON_5_DOWN,
@@ -76,10 +77,33 @@ pub fn register(hwnd: HWND) -> bool {
     true
 }
 
-/// Drains every queued raw event. Called from `WM_INPUT`; buffered reads keep a 1000 Hz mouse
-/// from turning into 1000 window messages per second.
-pub fn drain() {
+static PATH_LOGGED: AtomicBool = AtomicBool::new(false);
+
+/// Called from `WM_INPUT`.
+///
+/// Buffered reads (`GetRawInputBuffer`) keep a 1000 Hz mouse from turning into 1000 window
+/// messages per second, but they are an optimisation and not a guarantee: on some configurations
+/// the call reports nothing at all. The single-message read is the path every application uses
+/// and is always correct, so it backs the buffered one up. Whichever ends up delivering is logged
+/// once - the difference is invisible otherwise, and its absence cost a long debugging session.
+pub fn on_wm_input(lparam: LPARAM) {
+    let st = state();
+    st.tel.wm_input_messages.fetch_add(1, Relaxed);
+    if drain_buffered() == 0 {
+        read_single(lparam as HRAWINPUT);
+    }
+}
+
+fn note_path(path: &str) {
+    if !PATH_LOGGED.swap(true, Relaxed) {
+        crate::log::info(&format!("Raw Input is delivering via {path}"));
+    }
+}
+
+/// Returns the number of events processed.
+fn drain_buffered() -> usize {
     let header_size = size_of::<RAWINPUTHEADER>() as u32;
+    let mut processed = 0usize;
     BUFFER.with(|cell| {
         let mut buffer = cell.borrow_mut();
         loop {
@@ -97,27 +121,59 @@ pub fn drain() {
                     buffer.resize(needed_qwords.next_power_of_two(), 0);
                     continue;
                 }
-                crate::log::warn(&format!(
-                    "GetRawInputBuffer failed (error {})",
+                crate::log::debug(&format!(
+                    "GetRawInputBuffer failed (error {}); using single reads",
                     unsafe { GetLastError() }
                 ));
                 return;
             }
 
+            note_path("buffered reads");
             let mut ptr = buffer.as_ptr() as *const RAWINPUT;
             for _ in 0..count {
                 let event = unsafe { &*ptr };
-                match event.header.dwType {
-                    RIM_TYPEMOUSE => handle_mouse(unsafe { &event.data.mouse }),
-                    RIM_TYPEKEYBOARD => handle_keyboard(unsafe { &event.data.keyboard }),
-                    _ => {}
-                }
+                dispatch(event);
+                processed += 1;
                 // NEXTRAWINPUTBLOCK: dwSize rounded up to the pointer alignment.
                 let advance = (event.header.dwSize as usize + 7) & !7;
                 ptr = unsafe { (ptr as *const u8).add(advance) } as *const RAWINPUT;
             }
         }
     });
+    processed
+}
+
+fn read_single(handle: HRAWINPUT) {
+    let header_size = size_of::<RAWINPUTHEADER>() as u32;
+    let mut size = 0u32;
+    unsafe { GetRawInputData(handle, RID_INPUT, std::ptr::null_mut(), &mut size, header_size) };
+    if size == 0 || size as usize > 1024 {
+        return;
+    }
+    // 1 KiB of u64 keeps the required 8-byte alignment and covers any keyboard or mouse packet.
+    let mut storage = [0u64; 128];
+    let written = unsafe {
+        GetRawInputData(
+            handle,
+            RID_INPUT,
+            storage.as_mut_ptr() as *mut core::ffi::c_void,
+            &mut size,
+            header_size,
+        )
+    };
+    if written == 0 || written == u32::MAX {
+        return;
+    }
+    note_path("single reads");
+    dispatch(unsafe { &*(storage.as_ptr() as *const RAWINPUT) });
+}
+
+fn dispatch(event: &RAWINPUT) {
+    match event.header.dwType {
+        RIM_TYPEMOUSE => handle_mouse(unsafe { &event.data.mouse }),
+        RIM_TYPEKEYBOARD => handle_keyboard(unsafe { &event.data.keyboard }),
+        _ => {}
+    }
 }
 
 fn handle_mouse(mouse: &RAWMOUSE) {

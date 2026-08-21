@@ -580,7 +580,7 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_INPUT => {
             // The whole reason this window exists: drain Raw Input as fast as it arrives.
-            raw_input::drain();
+            raw_input::on_wm_input(lparam);
             DefWindowProcW(window, message, wparam, lparam)
         }
         WM_COMMAND => {

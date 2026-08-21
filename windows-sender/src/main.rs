@@ -206,9 +206,38 @@ fn spawn_telemetry() {
                 if st.config().diagnostics {
                     log::info(&snapshot.render(st.link().label(), st.target().label()));
                 }
+                diagnose(&snapshot);
             }
         })
         .expect("cannot spawn the telemetry thread");
+}
+
+/// Says out loud when the input pipeline is dead, instead of leaving it looking like a network
+/// problem. Each condition is reported once.
+fn diagnose(snapshot: &telemetry::Snapshot) {
+    use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+    static NO_MESSAGES: AtomicBool = AtomicBool::new(false);
+    static NO_EVENTS: AtomicBool = AtomicBool::new(false);
+
+    if state::state().target() != state::Target::RemoteMac {
+        return;
+    }
+    if snapshot.wm_input_hz < 1.0 {
+        if !NO_MESSAGES.swap(true, Relaxed) {
+            log::error(
+                "the Mac has the input but no WM_INPUT messages are arriving: Raw Input is not \
+                 being delivered to our window, so there is nothing to forward. Nothing will move \
+                 until this is fixed.",
+            );
+        }
+    } else if snapshot.raw_mouse_hz < 1.0 && snapshot.wm_input_hz > 1.0 {
+        if !NO_EVENTS.swap(true, Relaxed) {
+            log::error(
+                "WM_INPUT messages arrive but no mouse events can be read out of them - the raw \
+                 input read path is failing.",
+            );
+        }
+    }
 }
 
 #[cfg(windows)]
