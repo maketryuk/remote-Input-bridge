@@ -1,0 +1,32 @@
+//! Tray + status/settings window (spec §36, §38). On non-Windows targets everything here is a
+//! no-op so the portable modules stay unit-testable.
+
+#[cfg(windows)]
+pub mod tray;
+#[cfg(windows)]
+pub mod window;
+
+/// Command ids shared by the tray menu and the window's buttons.
+pub mod cmd {
+    pub const SHOW_WINDOW: u32 = 100;
+    pub const SWITCH_TO_MAC: u32 = 101;
+    pub const SWITCH_TO_WINDOWS: u32 = 102;
+    pub const RECONNECT: u32 = 103;
+    pub const PAIR: u32 = 104;
+    pub const SAVE: u32 = 105;
+    pub const QUIT: u32 = 106;
+    pub const OPEN_CONFIG_DIR: u32 = 107;
+    pub const TOGGLE_EDGE: u32 = 108;
+    pub const FORCE_LOCAL: u32 = 109;
+    /// `INTERVAL_BASE + index` into [`crate::config::MOUSE_INTERVAL_CHOICES_MS`].
+    pub const INTERVAL_BASE: u32 = 120;
+}
+
+/// Ask the UI to redraw. Safe to call from any thread.
+#[cfg(windows)]
+pub fn refresh() {
+    window::request_refresh();
+}
+
+#[cfg(not(windows))]
+pub fn refresh() {}

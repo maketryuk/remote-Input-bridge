@@ -1,0 +1,19 @@
+# Rust
+windows-sender/target/
+
+# Swift
+mac-receiver/.build/
+mac-receiver/build/
+mac-receiver/.swiftpm/
+*.xcuserstate
+xcuserdata/
+
+# macOS
+.DS_Store
+.AppleDouble
+._*
+
+# Editors
+.idea/
+.vscode/
+*.swp
