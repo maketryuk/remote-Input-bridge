@@ -13,13 +13,18 @@
 //! * **Movement** is never swallowed. Raw Input keeps delivering unaccelerated device deltas at
 //!   full rate, and the local cursor is held still with `ClipCursor` instead. Local windows do
 //!   receive `WM_MOUSEMOVE`, but the pointer cannot move, so nothing reacts to it.
-//! * **Buttons, wheel and keys** are swallowed here and forwarded *from here*, because by the
-//!   same rule this callback is the last place they exist. They are discrete and low-rate, so the
-//!   hook's view of them is exactly as good as Raw Input's.
+//! * **Keys** are swallowed here and forwarded *from here*, because by the same rule this callback
+//!   is the last place they exist. They are discrete and low-rate, so the hook's view of them is
+//!   exactly as good as Raw Input's.
+//! * **Buttons and the wheel** are swallowed here and *not* forwarded, because - and this is the
+//!   part that looks wrong until you measure it - a mouse button swallowed by this hook still
+//!   arrives as Raw Input. The rule that holds for movement and for keys does not hold for buttons.
 //!
-//! Nothing is ever forwarded twice: an event this hook swallows never reaches Raw Input, and an
-//! event it does not swallow - including everything aimed at a window of higher integrity level,
-//! which skips the hook entirely - is delivered by Raw Input as usual.
+//! That asymmetry is not a guess. One press with the button held produced one WM_INPUT message and
+//! two forwarded events while the hook forwarded buttons as well: every click reached the Mac
+//! twice, which a menu bar reads as open-then-close. A keystroke in the same conditions produces no
+//! WM_INPUT at all, which is why the keyboard has to be forwarded from here and the mouse must not
+//! be.
 //!
 //! These callbacks sit on the critical path of every physical event, so they touch nothing but
 //! atomics and the parsed hotkey table. They keep their own modifier mask rather than reaching
@@ -38,14 +43,12 @@ use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, ClipCursor, GetCursorPos, GetSystemMetrics, SetWindowsHookExW,
     UnhookWindowsHookEx, HC_ACTION, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLKHF_INJECTED,
-    LLMHF_INJECTED, MSLLHOOKSTRUCT, SM_XVIRTUALSCREEN, WH_KEYBOARD_LL, WH_MOUSE_LL,
-    WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
-    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_XBUTTONDOWN,
-    WM_XBUTTONUP,
+    LLMHF_INJECTED, MSLLHOOKSTRUCT, SM_XVIRTUALSCREEN, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN,
+    WM_MOUSEMOVE, WM_SYSKEYDOWN,
 };
 
 use crate::input::{self, keymap, KeyDecision};
-use crate::protocol::{button, modmask};
+use crate::protocol::modmask;
 use crate::state::{state, Target};
 
 static KEYBOARD_HOOK: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(ptr::null_mut());
@@ -276,40 +279,6 @@ fn forward_swallowed_key(info: &KBDLLHOOKSTRUCT, down: bool) {
     }
 }
 
-/// The same for a button, wheel notch or horizontal wheel notch.
-fn forward_swallowed_mouse(info: &MSLLHOOKSTRUCT, message: u32) {
-    let st = state();
-    // Both the wheel delta and the X button index live in the high word of mouseData.
-    let high = (info.mouseData >> 16) as u16;
-    let (index, down) = match message {
-        WM_LBUTTONDOWN => (button::LEFT, true),
-        WM_LBUTTONUP => (button::LEFT, false),
-        WM_RBUTTONDOWN => (button::RIGHT, true),
-        WM_RBUTTONUP => (button::RIGHT, false),
-        WM_MBUTTONDOWN => (button::MIDDLE, true),
-        WM_MBUTTONUP => (button::MIDDLE, false),
-        // XBUTTON1 is "back", XBUTTON2 is "forward".
-        WM_XBUTTONDOWN | WM_XBUTTONUP => (
-            if high == 2 { button::FORWARD } else { button::BACK },
-            message == WM_XBUTTONDOWN,
-        ),
-        // A signed WHEEL_DELTA multiple, 120 to the notch, exactly as Raw Input reports it.
-        WM_MOUSEWHEEL => {
-            st.tel.raw_mouse_events.fetch_add(1, Relaxed);
-            input::handle_scroll(0, high as i16 as i32);
-            return;
-        }
-        WM_MOUSEHWHEEL => {
-            st.tel.raw_mouse_events.fetch_add(1, Relaxed);
-            input::handle_scroll(high as i16 as i32, 0);
-            return;
-        }
-        _ => return,
-    };
-    st.tel.raw_mouse_events.fetch_add(1, Relaxed);
-    input::handle_button_event(index, down);
-}
-
 // ---------------------------------------------------------------------------
 // Mouse
 // ---------------------------------------------------------------------------
@@ -338,9 +307,9 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
                         }
                     }
                 } else {
-                    // Buttons and the wheel are hidden from Windows here, so - like keys - this is
-                    // the last place they exist and the place they have to be forwarded from.
-                    forward_swallowed_mouse(info, message);
+                    // Hidden from Windows and deliberately not forwarded: Raw Input delivers this
+                    // button or wheel notch anyway, and sending it from here as well is what made
+                    // every click arrive on the Mac twice.
                     return 1;
                 }
             } else if message == WM_MOUSEMOVE
