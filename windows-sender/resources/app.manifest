@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity type="win32" name="studio.lince.RemoteInputBridge" version="1.0.0.0"/>
+  <!-- Visual styles: without this the settings window draws Windows 95 controls. -->
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+          type="win32"
+          name="Microsoft.Windows.Common-Controls"
+          version="6.0.0.0"
+          processorArchitecture="*"
+          publicKeyToken="6595b64144ccf1df"
+          language="*"/>
+    </dependentAssembly>
+  </dependency>
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <!-- Never auto-elevate. The bridge installs per user and needs no privileges; running it
+             as administrator is an explicit user choice (it lets the low-level hooks suppress
+             input aimed at elevated windows too). -->
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 and 11. -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+    </application>
+  </compatibility>
+  <!-- Deliberately no dpiAwareness element. The settings window lays its controls out in fixed
+       pixels, so declaring awareness would make it render at a third of its size on a 300 %
+       display; staying unaware lets the system scale the whole window instead. -->
+</assembly>

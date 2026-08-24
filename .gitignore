@@ -1,6 +1,9 @@
 # Rust
 windows-sender/target/
 
+# Release artifacts
+dist/
+
 # Swift
 mac-receiver/.build/
 mac-receiver/build/

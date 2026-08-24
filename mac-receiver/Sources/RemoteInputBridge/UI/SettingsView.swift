@@ -4,6 +4,7 @@ import SwiftUI
 /// button to forget to press.
 struct SettingsView: View {
     @ObservedObject var model: AppModel
+    @ObservedObject private var updater = Updater.shared
 
     var body: some View {
         ScrollView {
@@ -21,10 +22,27 @@ struct SettingsView: View {
                 modifiers
                 Divider()
                 behaviour
+                Divider()
+                updates
             }
             .padding(20)
         }
         .frame(minWidth: 480, minHeight: 560)
+    }
+
+    private var updates: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Updates").font(.headline)
+            Text(updater.summary).font(.callout)
+            HStack {
+                Button(updater.actionTitle) { updater.act() }
+                    .disabled(!updater.actionEnabled)
+                Toggle("Check automatically", isOn: model.binding(\.autoCheckUpdates))
+                    .padding(.leading, 12)
+            }
+            Text("Updates are downloaded from GitHub releases and checked against the digest published with them. Nothing else is sent.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
     }
 
     private var status: some View {

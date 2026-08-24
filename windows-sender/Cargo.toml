@@ -1,9 +1,10 @@
 [package]
 name = "rib-sender"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Remote Input Bridge - Windows sender"
 license = "MIT"
+repository = "https://github.com/maketryuk/remote-Input-bridge"
 
 [[bin]]
 name = "rib-sender"
@@ -23,6 +24,7 @@ windows-sys = { version = "0.60", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_Media",
+    "Win32_Networking_WinHttp",
     "Win32_Security",
     "Win32_System_Console",
     "Win32_System_LibraryLoader",
@@ -39,9 +41,16 @@ windows-sys = { version = "0.60", features = [
     "Win32_Devices_HumanInterfaceDevice",
 ] }
 
+# Host-gated: the icon, the version resource and the manifest are compiled by rc.exe from the
+# MSVC toolchain, which only exists on a Windows host. `cargo check --target
+# x86_64-pc-windows-msvc` from a Mac therefore skips it, and build.rs is written to cope.
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+

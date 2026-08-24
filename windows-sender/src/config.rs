@@ -52,6 +52,9 @@ pub struct Config {
     pub hotkey_emergency_local: String,
     /// ERROR | WARN | INFO | DEBUG | TRACE (spec §40).
     pub log_level: String,
+    /// Look for a new release once a day and offer it in the settings window. Only ever a check
+    /// and a download the user confirms - nothing installs itself.
+    pub auto_check_updates: bool,
     /// Emit the diagnostics line once per second (spec §39). It goes to the log file and, while
     /// connected, to the receiver's log as well - which is the only practical way to see the
     /// sender's numbers without sitting at the Windows machine.
@@ -79,6 +82,7 @@ impl Default for Config {
             hotkey_switch_to_windows: "Ctrl+Alt+Right".into(),
             hotkey_emergency_local: "Ctrl+Alt+Shift+Escape".into(),
             log_level: "INFO".into(),
+            auto_check_updates: true,
             diagnostics: true,
         }
     }

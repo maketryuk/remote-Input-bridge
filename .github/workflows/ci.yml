@@ -1,0 +1,57 @@
+# Build and test both halves on every push. Deliberately runs the Rust tests on Windows rather
+# than Linux: the sender is a Win32 program, and a green run on a platform where half its code is
+# compiled out proves less than it looks like.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    name: Windows sender
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        run: rustup update stable && rustup default stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: windows-sender
+
+      - name: Test
+        working-directory: windows-sender
+        run: cargo test
+
+      - name: Build
+        working-directory: windows-sender
+        run: cargo build --release
+
+      # Proves the installer script still compiles against the binary that was just built, which
+      # is the part of a release most likely to break unnoticed.
+      - name: Installer
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          .\scripts\build-windows.ps1 -SkipBuild
+
+  macos:
+    name: macOS receiver
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: swift build --package-path mac-receiver -c release
+
+      - name: Crypto self-test
+        run: |
+          "$(swift build --package-path mac-receiver -c release --show-bin-path)/RemoteInputBridge" \
+              --crypto-selftest
+
+      - name: App bundle
+        run: ./scripts/build-mac-app.sh --zip

@@ -9,9 +9,8 @@ use windows_sys::Win32::UI::Shell::{
     NOTIFYICONDATAW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, LoadIconW, SetForegroundWindow,
-    TrackPopupMenu, IDI_APPLICATION, MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING,
-    TPM_LEFTALIGN, TPM_RIGHTBUTTON,
+    AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, SetForegroundWindow, TrackPopupMenu,
+    MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING, TPM_LEFTALIGN, TPM_RIGHTBUTTON,
 };
 
 use crate::config::MOUSE_INTERVAL_CHOICES_MS;
@@ -34,7 +33,7 @@ fn base(hwnd: HWND) -> NOTIFYICONDATAW {
     data.uID = TRAY_ID;
     data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     data.uCallbackMessage = TRAY_CALLBACK_MSG;
-    data.hIcon = unsafe { LoadIconW(ptr::null_mut(), IDI_APPLICATION) };
+    data.hIcon = super::window::app_icon(super::window::IconSize::Small);
     data
 }
 
@@ -115,6 +114,15 @@ pub fn show_menu(hwnd: HWND) {
         item(MF_STRING, cmd::SHOW_WINDOW, "Status and settings...");
         item(MF_STRING, cmd::RECONNECT, "Reconnect now");
         item(MF_STRING, cmd::OPEN_CONFIG_DIR, "Open config folder");
+        item(
+            MF_STRING,
+            cmd::CHECK_UPDATES,
+            &if let crate::update::Stage::Available(version) = crate::update::stage() {
+                format!("Install version {version}...")
+            } else {
+                "Check for updates...".to_string()
+            },
+        );
         item(MF_SEPARATOR, 0, "");
         item(MF_STRING, cmd::QUIT, "Quit");
 

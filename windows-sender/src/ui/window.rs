@@ -5,10 +5,12 @@ use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering::Relaxed};
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-use windows_sys::Win32::Graphics::Gdi::{GetStockObject, GetSysColorBrush, COLOR_BTNFACE, DEFAULT_GUI_FONT};
+use windows_sys::Win32::Graphics::Gdi::{
+    CreateFontIndirectW, GetStockObject, GetSysColorBrush, COLOR_BTNFACE, DEFAULT_GUI_FONT, HFONT,
+};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::BST_CHECKED;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use crate::config::{Config, MOUSE_INTERVAL_CHOICES_MS};
@@ -39,9 +41,11 @@ const ID_HOTKEY_MAC: u32 = 215;
 const ID_HOTKEY_WINDOWS: u32 = 216;
 const ID_HOTKEY_EMERGENCY: u32 = 217;
 const ID_DIAG2: u32 = 218;
+const ID_AUTO_UPDATE: u32 = 219;
+const ID_UPDATE: u32 = 220;
 
 const WIDTH: i32 = 470;
-const HEIGHT: i32 = 720;
+const HEIGHT: i32 = 758;
 
 static MAIN_WINDOW: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(ptr::null_mut());
 
@@ -49,8 +53,64 @@ fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+/// Ordinal of the icon `build.rs` embeds. `winresource` names the first icon "1", and the shell
+/// shows whichever icon has the lowest ordinal, so this is also the file's icon in Explorer.
+const APP_ICON: u32 = 1;
+
+/// Loads the embedded icon at the exact size the caller needs. `LoadIconW` would only ever return
+/// the large size and let the tray shrink it, which looks visibly worse than the hand-drawn 16 px
+/// frame in the .ico.
+pub fn app_icon(size: IconSize) -> HICON {
+    let metric = match size {
+        IconSize::Small => (SM_CXSMICON, SM_CYSMICON),
+        IconSize::Large => (SM_CXICON, SM_CYICON),
+    };
+    let instance = unsafe { GetModuleHandleW(ptr::null()) };
+    let icon = unsafe {
+        LoadImageW(
+            instance,
+            APP_ICON as *const u16,
+            IMAGE_ICON,
+            GetSystemMetrics(metric.0),
+            GetSystemMetrics(metric.1),
+            LR_DEFAULTCOLOR,
+        )
+    };
+    if icon.is_null() {
+        // No embedded resource (a build where rc.exe was missing): the generic application icon
+        // is ugly but keeps the window and the tray from having no icon at all.
+        return unsafe { LoadIconW(ptr::null_mut(), IDI_APPLICATION) };
+    }
+    icon as HICON
+}
+
+#[derive(Clone, Copy)]
+pub enum IconSize {
+    Small,
+    Large,
+}
+
 pub fn hwnd() -> HWND {
     MAIN_WINDOW.load(Relaxed)
+}
+
+/// Delivers a menu/button command to the window from any thread. Used by the updater to ask for
+/// a clean shutdown once the installer has taken over.
+pub fn post_command(command: u32) {
+    let window = hwnd();
+    if !window.is_null() {
+        unsafe { PostMessageW(window, WM_COMMAND, command as WPARAM, 0) };
+    }
+}
+
+/// Brings the already-running copy's window to the front. Called from a second instance, which
+/// has no window of its own, so it goes through the window class rather than a stored handle.
+pub fn show_other_instance() {
+    let class = wide("RemoteInputBridgeWindow");
+    let existing = unsafe { FindWindowW(class.as_ptr(), ptr::null()) };
+    if !existing.is_null() {
+        unsafe { PostMessageW(existing, WM_COMMAND, cmd::SHOW_WINDOW as WPARAM, 0) };
+    }
 }
 
 pub fn request_refresh() {
@@ -80,7 +140,8 @@ pub fn create(with_tray: bool, visible: bool) -> HWND {
     wc.hInstance = instance;
     wc.lpszClassName = class.as_ptr();
     wc.hCursor = unsafe { LoadCursorW(ptr::null_mut(), IDC_ARROW) };
-    wc.hIcon = unsafe { LoadIconW(ptr::null_mut(), IDI_APPLICATION) };
+    wc.hIcon = app_icon(IconSize::Large);
+    wc.hIconSm = app_icon(IconSize::Small);
     wc.hbrBackground = unsafe { GetSysColorBrush(COLOR_BTNFACE as i32) };
     if unsafe { RegisterClassExW(&wc) } == 0 {
         crate::log::error("RegisterClassExW failed");
@@ -169,9 +230,36 @@ fn get_check(parent: HWND, id: u32) -> bool {
         && unsafe { SendMessageW(handle, BM_GETCHECK, 0, 0) } == BST_CHECKED as isize
 }
 
+/// The font the rest of Windows uses for dialogs - Segoe UI on anything current. The stock
+/// `DEFAULT_GUI_FONT` is still the 1995 bitmap face, which next to the themed controls the
+/// manifest turns on looks like a different decade.
+fn gui_font() -> HFONT {
+    static FONT: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(ptr::null_mut());
+    let cached = FONT.load(Relaxed);
+    if !cached.is_null() {
+        return cached as HFONT;
+    }
+    let mut metrics: NONCLIENTMETRICSW = unsafe { std::mem::zeroed() };
+    metrics.cbSize = std::mem::size_of::<NONCLIENTMETRICSW>() as u32;
+    let font = unsafe {
+        if SystemParametersInfoW(
+            SPI_GETNONCLIENTMETRICS,
+            metrics.cbSize,
+            (&mut metrics as *mut NONCLIENTMETRICSW).cast(),
+            0,
+        ) == 0
+        {
+            GetStockObject(DEFAULT_GUI_FONT) as HFONT
+        } else {
+            CreateFontIndirectW(&metrics.lfMessageFont)
+        }
+    };
+    FONT.store(font as *mut core::ffi::c_void, Relaxed);
+    font
+}
+
 fn apply_font(handle: HWND) {
-    let font = unsafe { GetStockObject(DEFAULT_GUI_FONT) };
-    unsafe { SendMessageW(handle, WM_SETFONT, font as WPARAM, 1) };
+    unsafe { SendMessageW(handle, WM_SETFONT, gui_font() as WPARAM, 1) };
 }
 
 fn add_control(
@@ -292,6 +380,7 @@ fn build_controls(parent: HWND) {
         (ID_USE_UDP, "Send mouse movement over UDP (recommended)"),
         (ID_DIAG_ON, "Print the diagnostics line to the console"),
         (ID_AUTOSTART, "Start with Windows"),
+        (ID_AUTO_UPDATE, "Check for updates automatically"),
     ] {
         add_control(parent, "BUTTON", text, check_style, LABEL_X, y, 420, 22, id);
         y += 24;
@@ -339,8 +428,20 @@ fn build_controls(parent: HWND) {
         26,
         cmd::SWITCH_TO_WINDOWS,
     );
-    y += 34;
-    add_control(parent, "STATIC", "", 0, LABEL_X, y, 430, 40, 0);
+    y += 42;
+    add_control(parent, "STATIC", "", 0, LABEL_X, y, 430, 20, ID_UPDATE);
+    y += 22;
+    add_control(
+        parent,
+        "BUTTON",
+        "Check for updates",
+        WS_TABSTOP,
+        LABEL_X,
+        y,
+        170,
+        26,
+        cmd::CHECK_UPDATES,
+    );
 }
 
 fn refresh_controls(parent: HWND) {
@@ -369,7 +470,11 @@ fn refresh_controls(parent: HWND) {
     set_check(parent, ID_AUTOCONNECT, cfg.auto_connect);
     set_check(parent, ID_USE_UDP, cfg.use_udp);
     set_check(parent, ID_DIAG_ON, cfg.diagnostics);
-    set_check(parent, ID_AUTOSTART, cfg.start_with_system);
+    set_check(parent, ID_AUTO_UPDATE, cfg.auto_check_updates);
+    // Read from the registry rather than the config file: the installer can add the Run entry on
+    // its own, and a checkbox that disagrees with what Windows will actually do is worse than no
+    // checkbox at all.
+    set_check(parent, ID_AUTOSTART, crate::autostart::is_enabled());
     refresh_status(parent);
 }
 
@@ -417,6 +522,21 @@ fn refresh_status(parent: HWND) {
     drop(info);
     set_text(parent, ID_ERROR, &message);
 
+    set_text(parent, ID_UPDATE, &crate::update::summary());
+    let button = control(parent, cmd::CHECK_UPDATES);
+    if !button.is_null() {
+        let (label, enabled) = match crate::update::stage() {
+            crate::update::Stage::Available(version) => (format!("Install {version}"), true),
+            crate::update::Stage::Checking => ("Checking...".to_string(), false),
+            crate::update::Stage::Downloading(_) | crate::update::Stage::Installing => {
+                ("Updating...".to_string(), false)
+            }
+            _ => ("Check for updates".to_string(), true),
+        };
+        set_text(parent, cmd::CHECK_UPDATES, &label);
+        unsafe { EnableWindow(button, i32::from(enabled)) };
+    }
+
     if !hwnd().is_null() {
         tray::update(hwnd(), &format!("Remote Input Bridge - {status}"));
     }
@@ -433,6 +553,7 @@ fn save_settings(parent: HWND) {
         auto_connect: get_check(parent, ID_AUTOCONNECT),
         use_udp: get_check(parent, ID_USE_UDP),
         diagnostics: get_check(parent, ID_DIAG_ON),
+        auto_check_updates: get_check(parent, ID_AUTO_UPDATE),
         start_with_system: get_check(parent, ID_AUTOSTART),
         ..previous.clone()
     };
@@ -479,7 +600,9 @@ fn save_settings(parent: HWND) {
     }
 
     let cfg = cfg.sanitized();
-    if cfg.start_with_system != previous.start_with_system {
+    // Compared against the registry, not against the previous config: the two can legitimately
+    // disagree after an install, and the checkbox is what the user just looked at.
+    if cfg.start_with_system != crate::autostart::is_enabled() {
         if let Err(e) = crate::autostart::set(cfg.start_with_system) {
             crate::log::warn(&format!("could not change the autostart entry: {e}"));
         }
@@ -520,6 +643,16 @@ fn handle_command(parent: HWND, id: u32) {
             }
         }
         cmd::OPEN_CONFIG_DIR => open_config_dir(),
+        cmd::CHECK_UPDATES => {
+            // The same button installs what a previous check found, so the common case is one
+            // click to look and one click to update.
+            if crate::update::update_ready() {
+                crate::update::install();
+            } else {
+                crate::update::check(true);
+            }
+            refresh_status(parent);
+        }
         cmd::TOGGLE_EDGE => {
             let mut cfg = st.config();
             cfg.edge_switch = !cfg.edge_switch;

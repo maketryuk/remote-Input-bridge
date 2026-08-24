@@ -36,6 +36,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.async { [weak self] in self?.presentPermissionAlert() }
             }
         }
+        // Read through the model each time so switching the setting off takes effect at once.
+        Updater.shared.startAutomaticChecks { [weak model] in model?.config.autoCheckUpdates ?? false }
+
         if options.beginPairing {
             model.beginPairing()
             // Printed rather than only shown in the UI so a headless or scripted setup works.

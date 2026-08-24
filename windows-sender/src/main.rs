@@ -22,6 +22,7 @@ mod protocol;
 mod state;
 mod telemetry;
 mod ui;
+mod update;
 
 use config::{Config, KeyStore};
 
@@ -169,6 +170,13 @@ fn main() {
         }
     }
 
+    // Before anything opens a socket: a second copy that reached the Mac would take the session
+    // away from the copy already running, which is the opposite of what clicking the shortcut
+    // twice should do.
+    if !claim_single_instance() {
+        return;
+    }
+
     let (tx, rx) = std::sync::mpsc::channel();
     let st = state::init_state(cfg.clone(), KeyStore::load(), tx);
     input::set_hotkeys(&cfg);
@@ -180,6 +188,7 @@ fn main() {
 
     let net_thread = net::spawn(rx);
     spawn_telemetry();
+    update::spawn_auto_check();
 
     if let Some(code) = args.pair_code.clone() {
         st.send(net::NetMsg::Pair(code));
@@ -257,6 +266,37 @@ fn diagnose(snapshot: &telemetry::Snapshot) {
     }
 }
 
+/// Refuses to be the second copy. Two senders would fight over the low-level hooks and both
+/// forward every event, and the most likely way to end up with two is the least deliberate one:
+/// clicking the Start menu entry for something that is already sitting in the tray. So the second
+/// instance hands its window request to the first and leaves.
+///
+/// Session-local rather than `Global\`: two users logged into the same PC each get their own
+/// bridge, which is what the per-user install implies.
+#[cfg(windows)]
+fn claim_single_instance() -> bool {
+    use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+    use windows_sys::Win32::System::Threading::CreateMutexW;
+
+    let name: Vec<u16> = "RemoteInputBridge.SingleInstance"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    // The handle is deliberately leaked: the mutex must live exactly as long as the process, and
+    // Windows releases it on exit however the process ends.
+    let mutex = unsafe { CreateMutexW(std::ptr::null(), 1, name.as_ptr()) };
+    if mutex.is_null() {
+        // Without the mutex there is no way to tell; carrying on beats refusing to start.
+        return true;
+    }
+    if unsafe { GetLastError() } != ERROR_ALREADY_EXISTS {
+        return true;
+    }
+    log::info("another copy is already running; asking it to show its window");
+    ui::window::show_other_instance();
+    false
+}
+
 #[cfg(windows)]
 fn run(args: &Args) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -283,6 +323,11 @@ fn run(args: &Args) {
     }
     // Uninstall before anything else so a crash-on-exit can never leave input swallowed.
     input::hooks::uninstall();
+}
+
+#[cfg(not(windows))]
+fn claim_single_instance() -> bool {
+    true
 }
 
 #[cfg(not(windows))]

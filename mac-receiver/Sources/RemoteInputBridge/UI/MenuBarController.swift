@@ -94,6 +94,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
         menu.addItem(.separator())
         add(menu, "Settings…", #selector(openSettings))
+        add(menu, Updater.shared.updateReady ? Updater.shared.actionTitle + "…" : "Check for Updates…",
+            #selector(checkForUpdates))
         // macOS only lets a process post events if it had the permission when it started, so
         // granting Accessibility always has to be followed by a relaunch.
         add(menu, "Restart app", #selector(restartApp))
@@ -137,6 +139,14 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func grantPermission() {
         Permissions.request()
         Permissions.openSystemSettings()
+    }
+
+    @MainActor
+    @objc private func checkForUpdates() {
+        Updater.shared.act()
+        // The settings window is where the result shows up, so opening it is the only way the
+        // answer is visible at all.
+        openSettings()
     }
 
     @objc private func openSettings() {

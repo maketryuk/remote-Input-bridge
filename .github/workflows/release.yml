@@ -1,0 +1,189 @@
+# Builds both halves, publishes them as a GitHub release, and writes the manifest the apps
+# themselves read to find updates.
+#
+# Trigger it by pushing a tag: `git tag v0.2.0 && git push origin v0.2.0`. The tag must match the
+# version in windows-sender/Cargo.toml, which is the single source of truth for both halves - the
+# build fails rather than shipping a release whose number disagrees with what the apps report.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build, e.g. v0.2.0"
+        required: true
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  windows:
+    name: Windows installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Version from the tag
+        shell: bash
+        run: echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
+      - name: Rust toolchain
+        run: rustup update stable && rustup default stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: windows-sender
+
+      # The runner images carry Inno Setup, but not on every image generation, and the script needs
+      # 6.3 or newer for `ArchitecturesAllowed=x64compatible`.
+      - name: Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build
+        shell: pwsh
+        run: .\scripts\build-windows.ps1 -ExpectVersion $env:VERSION
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist/RemoteInputBridge-Setup-*.exe
+            dist/windows-artifact.json
+          if-no-files-found: error
+
+  macos:
+    name: macOS app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Version from the tag
+        run: echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
+      # Optional, and worth setting up: macOS ties the Accessibility grant to the bundle's
+      # signature, so releases signed with one stable identity keep the permission the user already
+      # gave, while ad-hoc signed ones ask for it again after every update. See README, "Signing the
+      # Mac releases". Without the secrets the build still works and signs ad-hoc.
+      - name: Signing identity
+        if: ${{ secrets.MAC_CERT_P12 != '' }}
+        env:
+          MAC_CERT_P12: ${{ secrets.MAC_CERT_P12 }}
+          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+          MAC_CERT_NAME: ${{ secrets.MAC_CERT_NAME }}
+        run: |
+          set -euo pipefail
+          echo "$MAC_CERT_P12" | base64 --decode > "$RUNNER_TEMP/identity.p12"
+          security create-keychain -p actions "$RUNNER_TEMP/build.keychain"
+          security set-keychain-settings -lut 3600 "$RUNNER_TEMP/build.keychain"
+          security unlock-keychain -p actions "$RUNNER_TEMP/build.keychain"
+          security list-keychains -d user -s "$RUNNER_TEMP/build.keychain" login.keychain-db
+          security import "$RUNNER_TEMP/identity.p12" -k "$RUNNER_TEMP/build.keychain" \
+              -P "$MAC_CERT_PASSWORD" -T /usr/bin/codesign -A
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k actions \
+              "$RUNNER_TEMP/build.keychain" >/dev/null
+          # A self-signed certificate is not trusted by default, and codesign refuses to use an
+          # untrusted identity. An Apple-issued one is already trusted and this is a no-op for it.
+          openssl pkcs12 -in "$RUNNER_TEMP/identity.p12" -clcerts -nokeys \
+              -passin pass:"$MAC_CERT_PASSWORD" -out "$RUNNER_TEMP/identity.pem"
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign \
+              -k /Library/Keychains/System.keychain "$RUNNER_TEMP/identity.pem"
+          echo "RIB_SIGN_IDENTITY=$MAC_CERT_NAME" >> "$GITHUB_ENV"
+          rm -f "$RUNNER_TEMP/identity.p12" "$RUNNER_TEMP/identity.pem"
+
+      - name: Build
+        env:
+          RIB_EXPECT_VERSION: ${{ env.VERSION }}
+        run: ./scripts/build-mac-app.sh --zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: |
+            dist/RemoteInputBridge-*-macos.zip
+            dist/macos-artifact.json
+          if-no-files-found: error
+
+  publish:
+    name: Publish the release
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Compose latest.json
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find artifacts -type f -exec mv -t dist {} +
+          python3 - <<'PY'
+          import json, os, pathlib
+
+          dist = pathlib.Path("dist")
+          tag = os.environ["TAG"]
+          repo = os.environ["REPO"]
+          base = f"https://github.com/{repo}/releases/download/{tag}"
+
+          def artifact(name):
+              path = dist / name
+              if not path.exists():
+                  raise SystemExit(f"{name} is missing: the platform build did not produce it")
+              data = json.loads(path.read_text())
+              path.unlink()  # the per-platform files are scaffolding, not release assets
+              return data, {
+                  "url": f"{base}/{data['file']}",
+                  "sha256": data["sha256"],
+                  "size": data["size"],
+              }
+
+          windows_data, windows = artifact("windows-artifact.json")
+          macos_data, macos = artifact("macos-artifact.json")
+          if windows_data["version"] != macos_data["version"]:
+              raise SystemExit(
+                  f"the two halves disagree on the version: "
+                  f"{windows_data['version']} and {macos_data['version']}"
+              )
+          version = windows_data["version"]
+          if tag != f"v{version}":
+              raise SystemExit(f"tag {tag} does not match version {version}")
+
+          manifest = {
+              "version": version,
+              "notes_url": f"https://github.com/{repo}/releases/tag/{tag}",
+              "windows": windows,
+              "macos": macos,
+          }
+          (dist / "latest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          print(json.dumps(manifest, indent=2))
+          PY
+
+      - name: Checksums
+        run: cd dist && sha256sum * | tee SHA256SUMS.txt
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # latest.json is what the running apps fetch, so it has to be attached to the release
+          # rather than only committed: /releases/latest/download/latest.json is the only URL that
+          # keeps pointing at the newest one without an API call.
+          gh release create "$TAG" \
+              --title "Remote Input Bridge ${TAG#v}" \
+              --generate-notes \
+              --verify-tag \
+              dist/*

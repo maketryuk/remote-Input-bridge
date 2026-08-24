@@ -84,6 +84,9 @@ struct Config: Codable, Equatable {
     var heartbeatTimeoutMs: Double = 1000
     var logLevel = "INFO"
     var startAtLogin = false
+    /// Look for a new release once a day and offer it in the settings window. Only ever a check and
+    /// a download the user confirms - nothing installs itself.
+    var autoCheckUpdates = true
     var diagnostics = false
 
     static func directory() -> URL {

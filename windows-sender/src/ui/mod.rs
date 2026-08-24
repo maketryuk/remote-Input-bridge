@@ -18,6 +18,7 @@ pub mod cmd {
     pub const OPEN_CONFIG_DIR: u32 = 107;
     pub const TOGGLE_EDGE: u32 = 108;
     pub const FORCE_LOCAL: u32 = 109;
+    pub const CHECK_UPDATES: u32 = 110;
     /// `INTERVAL_BASE + index` into [`crate::config::MOUSE_INTERVAL_CHOICES_MS`].
     pub const INTERVAL_BASE: u32 = 120;
 }
@@ -30,3 +31,13 @@ pub fn refresh() {
 
 #[cfg(not(windows))]
 pub fn refresh() {}
+
+/// Ask the app to shut down through the normal path - hooks uninstalled, input handed back to
+/// Windows, the Mac told - rather than exiting from under itself. Safe to call from any thread.
+#[cfg(windows)]
+pub fn quit() {
+    window::post_command(cmd::QUIT);
+}
+
+#[cfg(not(windows))]
+pub fn quit() {}

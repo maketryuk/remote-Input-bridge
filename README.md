@@ -27,8 +27,13 @@ connected mouse, including a 1000 Hz gaming mouse.** Everything else is subordin
 | `mac-receiver/` | Swift receiver: Network.framework → event scheduler → `CGEvent`, menu bar app |
 | `scripts/test-sender.py` | Reference sender. Speaks the real protocol, so the Mac side can be exercised (and packet loss injected) without a Windows box |
 | `scripts/build-mac-app.sh` | Builds the receiver into a `.app` bundle |
+| `scripts/build-windows.ps1` | Builds the sender and packs the per-user installer |
+| `scripts/make-windows-icon.sh` | Draws `app.ico` from the same source as the Mac icon (run on a Mac; the result is committed) |
+| `installer/windows/rib-setup.iss` | Inno Setup script for that installer |
+| `.github/workflows/release.yml` | Tag → build both halves → publish the release the apps update from |
 | `docs/PROTOCOL.md` | Wire protocol v1, byte for byte |
 | `docs/TESTING.md` | The acceptance scenarios, as commands you can actually run |
+| `docs/RELEASING.md` | How to cut a release, and what updating looks like from the app's side |
 
 ---
 
@@ -52,7 +57,74 @@ after deliberate 2 % packet loss.
 
 ---
 
+## Install
+
+Both halves ship together from the [releases page](https://github.com/maketryuk/remote-Input-bridge/releases)
+under one version number, so a release is always a matched pair. Building from source is in
+[Build](#build) below and is not needed to use the thing.
+
+### Windows
+
+Download `RemoteInputBridge-Setup-<version>.exe` and run it.
+
+It installs **for the current user only**, into `%LOCALAPPDATA%\Programs\RemoteInputBridge`, and
+never asks for administrator rights — which is also what lets it update itself without a UAC prompt
+every time. It adds a Start menu entry, an uninstaller in *Apps & features*, and, unless you untick
+it, a startup entry so the bridge is there when you sign in.
+
+> **SmartScreen will warn you.** The installer is not code signed — a certificate costs a few
+> hundred dollars a year — so Windows shows *"Windows protected your PC"* on first run. Choose
+> **More info → Run anyway**. The same warning appears again after each update, because the
+> reputation SmartScreen builds is tied to a signature this build does not have.
+
+### macOS
+
+Download `RemoteInputBridge-<version>-macos.zip`, unzip it, and drag `RemoteInputBridge.app` into
+`/Applications`.
+
+The app is not notarised, so the first launch is refused with *"Apple could not verify …"*. Open
+**System Settings → Privacy & Security**, scroll to the bottom and press **Open Anyway**; or clear
+the download flag yourself:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/RemoteInputBridge.app
+```
+
+Then grant **Accessibility** (System Settings → Privacy & Security → Accessibility) and, in the
+app's settings, tick **Start at login**.
+
+---
+
+## Updates
+
+Both apps check once a day, and on demand from the settings window or the tray/menu bar item. When
+a newer release exists you get one button: it downloads the file, checks its SHA-256 against the
+digest published in the release, and installs it. Nothing is installed without that click, and the
+daily check can be switched off with **Check for updates automatically**.
+
+* **Windows** — the installer runs silently and starts the bridge again afterwards. Settings and
+  paired keys are untouched.
+* **macOS** — the bundle is replaced in place and the app relaunches. If `/Applications` is not
+  writable for you, the update says so instead of failing halfway.
+* Either half can update on its own. The wire protocol carries its own version number and both
+  sides insist on an exact match, so a release that changes the protocol has to be installed on
+  both machines — when that happens the two say so in as many words
+  (*"the Mac speaks protocol 2, this build speaks 1"*) instead of failing obscurely.
+
+> **macOS asks for Accessibility again after an update** unless the release was built with a stable
+> signing identity — macOS ties the permission to the bundle's signature, and an ad-hoc signature
+> changes with every build. See [docs/RELEASING.md](docs/RELEASING.md) for the (free, five minute)
+> way to fix that for your own releases.
+
+What leaves the machine for this: one HTTPS request to `github.com`, with a user agent that carries
+the version and nothing else. No identifiers, no configuration, no host name. See
+[Privacy](#privacy).
+
+---
+
 ## Build
+
+Only needed to develop on it — released builds come from the [Install](#install) section above.
 
 ### macOS receiver
 
@@ -108,7 +180,7 @@ The code cross-checks from macOS too, which is how it was developed:
 ```bash
 cd windows-sender
 cargo check --target x86_64-pc-windows-msvc   # type-checks the Win32 paths
-cargo test                                    # 27 unit tests, host-native
+cargo test                                    # 30 unit tests, host-native
 ```
 
 ---
@@ -123,7 +195,9 @@ cargo test                                    # 27 unit tests, host-native
    device key is stored in `%APPDATA%\RemoteInputBridge\keys.json`.
 3. Press `Ctrl+Alt+←`. The tray status and the menu bar icon both switch to "Mac".
 
-Nothing about this needs an account, a cloud service or an internet connection.
+Nothing about this needs an account or a cloud service. The bridge itself never touches the
+internet — the only outbound connection either app makes is the update check, and that can be
+switched off.
 
 ---
 
@@ -149,13 +223,16 @@ events so the same movement is not acted on twice, and the Windows cursor stays 
 
 **Windows** (tray → *Status and settings…*): Mac IP, TCP/UDP ports, device name, mouse update
 interval (1 / 2 / 4 / 8 ms), the three hotkeys, edge switching, local input suppression,
-auto-connect, UDP on/off, diagnostics line, start with Windows. Stored in
+auto-connect, UDP on/off, diagnostics line, start with Windows, automatic update checks. Stored in
 `%APPDATA%\RemoteInputBridge\config.json`.
+
+"Start with Windows" reads the registry rather than the config file, so it always shows what
+Windows will actually do — including when the installer set it.
 
 **Mac** (menu bar → *Settings…*): ports, device name, pointer speed, event scheduling mode
 (`smoothed` / `coalesced` / `paced` / `immediate`) and the smoothing window, scroll mode and
 scaling, natural scrolling, modifier mapping, edge switching, heartbeat timeout, log level, start
-at login.
+at login, automatic update checks.
 
 The scheduling modes exist to be compared on your own link: `immediate` is the lowest latency and
 the most exposed to jitter, `smoothed` (default, 10 ms) is the most even. Both extremes are one
@@ -188,6 +265,25 @@ no tray icon:
 ```powershell
 .\rib-sender.exe --console --no-tray --diagnostics --mac 192.168.1.123 --interval 2
 ```
+
+---
+
+## Privacy
+
+The bridge carries everything you type. What that means in practice:
+
+* **Keystrokes and mouse movement go to one place: the Mac you paired with**, over your own
+  network, authenticated and integrity-checked with a key established at pairing
+  (see [docs/PROTOCOL.md](docs/PROTOCOL.md)). There is no server in the middle and no account.
+* **Nothing is logged that you typed.** The log records event *rates*, not content; key identifiers
+  appear only at `TRACE`, which is off by default and never sent anywhere.
+* **The only internet connection either app makes is the update check** — a GET to
+  `github.com`, sending a user agent of the form `RemoteInputBridge/0.2.0 (Windows)` and nothing
+  else. GitHub sees your IP address, as it would for any download. Turn the check off and neither
+  app opens a socket to anything but the machine you paired with.
+* **Your settings and keys stay local**: `%APPDATA%\RemoteInputBridge\` on Windows,
+  `~/Library/Application Support/RemoteInputBridge/` on the Mac. Neither is included in anything the
+  apps send, and the Windows uninstaller asks before deleting them.
 
 ---
 
@@ -244,7 +340,16 @@ These are deliberate MVP boundaries, not bugs:
 | Motion is smooth but feels coarse, in visible steps | Check `mouse in` in the diagnostics line. If it reads 125 Hz the mouse is at its default polling rate; set it to 1000 Hz in the mouse's own software and the steps get eight times finer |
 | A modifier appears stuck on the Mac | Should be impossible: every disconnect releases everything. If it happens, `Ctrl+Alt+→` then `Ctrl+Alt+←` re-syncs, and please report the log |
 | Windows input feels doubled while the Mac is active | Local suppression is off, the foreground app reads Raw Input directly (see limitations), or the foreground window is elevated and this app is not — a low-level hook is skipped for higher-integrity windows. Run the sender as administrator to cover those. Forwarding to the Mac keeps working either way |
+| Windows says "the update check failed" | It is a plain HTTPS GET to github.com: a proxy that needs credentials, a firewall rule, or no route at all will stop it. The rest of the app is unaffected — the check is the only thing that ever leaves the LAN |
+| The update installed but the Mac asks for Accessibility again | Expected for a release signed ad-hoc: macOS ties the grant to the signature and an ad-hoc one changes every build. See [docs/RELEASING.md](docs/RELEASING.md) for the stable-identity fix |
+| "Start with Windows" is ticked but nothing starts | Check `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` for a `RemoteInputBridge` value pointing at an executable that still exists. Untick and tick it again to rewrite it to the current path |
 | The mouse reports only 125 Hz | If it is behind a KVM switch, the KVM is very likely the limit — many run their HID emulation at 125 Hz regardless of the mouse. Plugging the mouse straight into the PC is the only way to get 1000 Hz through |
+
+---
+
+## Licence
+
+MIT — see [LICENSE](LICENSE).
 
 ---
 

@@ -9,11 +9,26 @@ let sizes = [16, 32, 64, 128, 256, 512, 1024]
 let iconset = URL(fileURLWithPath: CommandLine.arguments[1])
 try? FileManager.default.createDirectory(at: iconset, withIntermediateDirectories: true)
 
+// Rendered into an explicit 1x bitmap rather than through NSImage.lockFocus(): the latter draws at
+// the current screen's backing scale, so on a Retina Mac every frame came out at twice its
+// nominal size - a 16 px icon carrying a 32 px image.
 func draw(size: Int) -> Data {
     let side = CGFloat(size)
-    let image = NSImage(size: NSSize(width: side, height: side))
-    image.lockFocus()
-    guard let context = NSGraphicsContext.current?.cgContext else { image.unlockFocus(); return Data() }
+    guard let rep = NSBitmapImageRep(
+        bitmapDataPlanes: nil,
+        pixelsWide: size,
+        pixelsHigh: size,
+        bitsPerSample: 8,
+        samplesPerPixel: 4,
+        hasAlpha: true,
+        isPlanar: false,
+        colorSpaceName: .deviceRGB,
+        bytesPerRow: 0,
+        bitsPerPixel: 0
+    ), let graphics = NSGraphicsContext(bitmapImageRep: rep) else { return Data() }
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = graphics
+    let context = graphics.cgContext
     context.setShouldAntialias(true)
 
     // Squircle background with a vertical gradient.
@@ -83,24 +98,28 @@ func draw(size: Int) -> Data {
     context.addPath(arrow)
     context.fillPath()
 
-    image.unlockFocus()
-
-    guard let tiff = image.tiffRepresentation,
-          let rep = NSBitmapImageRep(data: tiff),
-          let png = rep.representation(using: .png, properties: [:])
-    else { return Data() }
-    return png
+    NSGraphicsContext.restoreGraphicsState()
+    return rep.representation(using: .png, properties: [:]) ?? Data()
 }
 
-// iconutil only accepts this exact set of names; anything else makes it fail.
-for size in sizes {
-    let png = draw(size: size)
-    if size <= 512 {
-        try? png.write(to: iconset.appendingPathComponent("icon_\(size)x\(size).png"))
+// Windows wants a flat set of frames to pack into an .ico, including the 20/24/48 px sizes the
+// shell asks for and macOS never does; iconutil, in turn, only accepts its own exact names and
+// fails on anything else. Hence two output shapes from one drawing routine.
+if CommandLine.arguments.contains("--windows") {
+    for size in [16, 20, 24, 32, 48, 64, 128, 256] {
+        try? draw(size: size).write(to: iconset.appendingPathComponent("\(size).png"))
     }
-    let half = size / 2
-    if half >= 16 {
-        try? png.write(to: iconset.appendingPathComponent("icon_\(half)x\(half)@2x.png"))
+    print("windows icon frames written to \(iconset.path)")
+} else {
+    for size in sizes {
+        let png = draw(size: size)
+        if size <= 512 {
+            try? png.write(to: iconset.appendingPathComponent("icon_\(size)x\(size).png"))
+        }
+        let half = size / 2
+        if half >= 16 {
+            try? png.write(to: iconset.appendingPathComponent("icon_\(half)x\(half)@2x.png"))
+        }
     }
+    print("iconset written to \(iconset.path)")
 }
-print("iconset written to \(iconset.path)")

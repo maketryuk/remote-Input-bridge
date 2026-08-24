@@ -7,6 +7,7 @@
 #   ./scripts/build-mac-app.sh                 build only
 #   ./scripts/build-mac-app.sh --install       build and install to /Applications
 #   ./scripts/build-mac-app.sh --install --run build, install and launch
+#   ./scripts/build-mac-app.sh --zip           build and pack dist/ for a release
 #   ./scripts/build-mac-app.sh --debug         build the debug configuration
 set -euo pipefail
 
@@ -15,16 +16,30 @@ RECEIVER="$ROOT/mac-receiver"
 CONFIGURATION=release
 INSTALL=0
 RUN=0
-VERSION=0.1.0
+ZIP=0
 DESTINATION=/Applications
+
+# One version number for the whole project, and Cargo is the only build system here that cannot
+# read it from somewhere else - so windows-sender/Cargo.toml is where it lives and everything else
+# follows. Bump it there and both halves, the installer and the release manifest agree.
+VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/windows-sender/Cargo.toml" | head -1)"
+if [ -z "$VERSION" ]; then
+    echo "cannot read the version from windows-sender/Cargo.toml" >&2
+    exit 1
+fi
+if [ -n "${RIB_EXPECT_VERSION:-}" ] && [ "$RIB_EXPECT_VERSION" != "$VERSION" ]; then
+    echo "version mismatch: expected $RIB_EXPECT_VERSION, Cargo.toml says $VERSION" >&2
+    exit 1
+fi
 
 for argument in "$@"; do
     case "$argument" in
         --install) INSTALL=1 ;;
         --run) RUN=1 ;;
+        --zip) ZIP=1 ;;
         --debug) CONFIGURATION=debug ;;
         --release) CONFIGURATION=release ;;
-        -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,13p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown argument: $argument" >&2; exit 2 ;;
     esac
 done
@@ -32,7 +47,7 @@ done
 APP="$RECEIVER/build/RemoteInputBridge.app"
 ICON="$RECEIVER/build/AppIcon.icns"
 
-echo "==> building ($CONFIGURATION)"
+echo "==> building $VERSION ($CONFIGURATION)"
 cd "$RECEIVER"
 swift build -c "$CONFIGURATION"
 BINARY="$(swift build -c "$CONFIGURATION" --show-bin-path)/RemoteInputBridge"
@@ -127,6 +142,29 @@ if [ "$INSTALL" = 1 ]; then
         -f "$TARGET" 2>/dev/null || true
     APP="$TARGET"
     echo "    installed"
+fi
+
+if [ "$ZIP" = 1 ]; then
+    DIST="$ROOT/dist"
+    ZIP_PATH="$DIST/RemoteInputBridge-$VERSION-macos.zip"
+    echo "==> packing $ZIP_PATH"
+    mkdir -p "$DIST"
+    rm -f "$ZIP_PATH"
+    # ditto rather than zip: it keeps the bundle's symlinks, resource forks and - crucially - the
+    # code signature intact, which a plain `zip -r` does not reliably do.
+    ditto -c -k --sequesterRsrc --keepParent "$RECEIVER/build/RemoteInputBridge.app" "$ZIP_PATH"
+    SHA="$(shasum -a 256 "$ZIP_PATH" | cut -d' ' -f1)"
+    SIZE="$(stat -f%z "$ZIP_PATH")"
+    cat > "$DIST/macos-artifact.json" <<JSON
+{
+  "version": "$VERSION",
+  "file": "$(basename "$ZIP_PATH")",
+  "sha256": "$SHA",
+  "size": $SIZE
+}
+JSON
+    echo "    sha256 $SHA"
+    echo "    $SIZE bytes"
 fi
 
 if [ "$RUN" = 1 ]; then
