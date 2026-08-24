@@ -252,10 +252,10 @@ click apart, and the diagnostics line shows what each costs. Stored in
 Default modifier mapping is `Ctrl→Control`, `Alt→Option`, `Win→Command`, `Shift→Shift`; the first
 three are remappable (spec §15).
 
-**Mac key positions** (Mac settings → Modifier mapping) swaps Alt and the Windows key, so the key
-beside the space bar acts as Command the way it does on a Mac keyboard. It applies only to what is
-sent to the Mac — Windows keeps its own layout, which a keyboard's own hardware "Mac mode" cannot
-do, since that swaps the keys for both machines at once. Use one or the other, never both.
+A keyboard with a hardware Mac mode of its own needs nothing here: in that mode it already sends
+Command where Alt used to be, and the default mapping passes it through as Command. If you would
+rather not switch the keyboard — its mode applies to both machines at once — set `Alt → Command`
+and `Windows key → Option` instead, which does the same thing for what is sent to the Mac only.
 
 ---
 
