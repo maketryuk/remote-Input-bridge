@@ -20,6 +20,7 @@ use crate::state::{state, LinkState, Target};
 use crate::ui::{cmd, tray};
 
 const WM_APP_REFRESH: u32 = WM_APP + 2;
+const WM_APP_INPUT_HIDDEN: u32 = WM_APP + 3;
 const REFRESH_TIMER: usize = 1;
 
 const ID_STATUS: u32 = 200;
@@ -110,6 +111,15 @@ pub fn show_other_instance() {
     let existing = unsafe { FindWindowW(class.as_ptr(), ptr::null()) };
     if !existing.is_null() {
         unsafe { PostMessageW(existing, WM_COMMAND, cmd::SHOW_WINDOW as WPARAM, 0) };
+    }
+}
+
+/// Posted rather than acted on directly: a target switch can be decided on the network thread,
+/// and windows may only be shown and focused from the thread that owns them.
+pub fn post_input_hidden(hidden: bool) {
+    let window = hwnd();
+    if !window.is_null() {
+        unsafe { PostMessageW(window, WM_APP_INPUT_HIDDEN, hidden as WPARAM, 0) };
     }
 }
 
@@ -233,7 +243,7 @@ fn get_check(parent: HWND, id: u32) -> bool {
 /// The font the rest of Windows uses for dialogs - Segoe UI on anything current. The stock
 /// `DEFAULT_GUI_FONT` is still the 1995 bitmap face, which next to the themed controls the
 /// manifest turns on looks like a different decade.
-fn gui_font() -> HFONT {
+pub fn gui_font() -> HFONT {
     static FONT: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(ptr::null_mut());
     let cached = FONT.load(Relaxed);
     if !cached.is_null() {
@@ -722,6 +732,14 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_APP_REFRESH => {
             refresh_status(window);
+            0
+        }
+        WM_APP_INPUT_HIDDEN => {
+            if wparam != 0 {
+                super::banner::show();
+            } else {
+                super::banner::hide();
+            }
             0
         }
         WM_TIMER => {

@@ -2,6 +2,8 @@
 //! no-op so the portable modules stay unit-testable.
 
 #[cfg(windows)]
+pub mod banner;
+#[cfg(windows)]
 pub mod tray;
 #[cfg(windows)]
 pub mod window;
@@ -31,6 +33,17 @@ pub fn refresh() {
 
 #[cfg(not(windows))]
 pub fn refresh() {}
+
+/// Tell the UI that the input has moved. `hidden` is true while the Mac owns it *and* local
+/// suppression is on - the case where Windows should stop reacting, and so the case where the
+/// banner takes the focus away from whatever was running. Safe to call from any thread.
+#[cfg(windows)]
+pub fn input_hidden_from_windows(hidden: bool) {
+    window::post_input_hidden(hidden);
+}
+
+#[cfg(not(windows))]
+pub fn input_hidden_from_windows(_hidden: bool) {}
 
 /// Ask the app to shut down through the normal path - hooks uninstalled, input handed back to
 /// Windows, the Mac told - rather than exiting from under itself. Safe to call from any thread.

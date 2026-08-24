@@ -205,6 +205,9 @@ impl AppState {
             && self.suppress_preference.load(Ordering::Acquire);
         self.suppress.store(suppress, Ordering::Release);
         crate::input::on_target_changed(target);
+        // Only when Windows is actually meant to stop reacting: someone who turned suppression off
+        // asked for local input to keep working, and stealing the focus would contradict that.
+        crate::ui::input_hidden_from_windows(suppress);
         self.send(NetMsg::TargetChanged(target));
         crate::log::info(&format!("ACTIVE TARGET: {}", target.label().to_uppercase()));
         crate::ui::refresh();

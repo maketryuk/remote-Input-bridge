@@ -303,11 +303,18 @@ and the Mac on Wi-Fi is the tested configuration.
 
 These are deliberate MVP boundaries, not bugs:
 
-* **Games can still see local input.** Suppression uses documented user-space mechanisms only:
-  the low-level hooks swallow buttons, wheel and keys, and the pointer is pinned with
-  `ClipCursor`. An application that reads Raw Input or DirectInput directly — which is most
-  games, and anything behind an anti-cheat — still sees device movement. No kernel driver, no
-  injection, no anti-cheat interference (spec §20, §21).
+* **Games read the mouse past the hooks.** Suppression uses documented user-space mechanisms
+  only: the low-level hooks swallow buttons, wheel and keys, and the pointer is pinned with
+  `ClipCursor`. Movement is deliberately *not* swallowed — a hook that swallows an event drops it
+  before the system turns it into Raw Input, for every process including this one, which would
+  cost exactly the 1000 raw deltas a second that make the remote cursor smooth. So an application
+  reading Raw Input or DirectInput directly, which is most games, still sees device movement.
+
+  The mitigation is focus: switching to the Mac raises a small always-on-top window and gives it
+  the foreground, and virtually every game ignores input while it is not in front. A game in
+  exclusive full screen is minimised by that; one in a window or borderless merely loses focus.
+  The window that had the focus gets it back when the input returns. Still no kernel driver, no
+  injection, nothing an anti-cheat has cause to object to (spec §20, §21).
 * **Payloads are authenticated, not encrypted.** Every datagram and frame is HMAC-tagged with a
   per-session key and rejected on replay, so an unpaired device cannot inject input. Keystrokes
   are not confidential on the wire. Trusted LAN only; TLS/DTLS is v2.
@@ -339,6 +346,7 @@ These are deliberate MVP boundaries, not bugs:
 | Movement is smooth locally but stutters over Wi-Fi | Check `jitter` in the diagnostics line. Above a few ms it is the link, not the app: prefer 5 GHz, get closer to the access point, or put the Mac on Ethernet. Then raise **Smoothing** (Settings → Pointer) until it is even — it absorbs roughly its own value in jitter |
 | Motion is smooth but feels coarse, in visible steps | Check `mouse in` in the diagnostics line. If it reads 125 Hz the mouse is at its default polling rate; set it to 1000 Hz in the mouse's own software and the steps get eight times finer |
 | A modifier appears stuck on the Mac | Should be impossible: every disconnect releases everything. If it happens, `Ctrl+Alt+→` then `Ctrl+Alt+←` re-syncs, and please report the log |
+| A game keeps reacting to the mouse while the Mac is active | Games read Raw Input directly, which no hook can hide (see limitations). Switching raises a banner that takes the foreground, and a game that is not in front ignores input — if it still reacts, it is one of the few that reads input unfocused, and the only remedy is to minimise it |
 | Windows input feels doubled while the Mac is active | Local suppression is off, the foreground app reads Raw Input directly (see limitations), or the foreground window is elevated and this app is not — a low-level hook is skipped for higher-integrity windows. Run the sender as administrator to cover those. Forwarding to the Mac keeps working either way |
 | Windows says "the update check failed" | It is a plain HTTPS GET to github.com: a proxy that needs credentials, a firewall rule, or no route at all will stop it. The rest of the app is unaffected — the check is the only thing that ever leaves the LAN |
 | The update installed but the Mac asks for Accessibility again | Expected for a release signed ad-hoc: macOS ties the grant to the signature and an ad-hoc one changes every build. See [docs/RELEASING.md](docs/RELEASING.md) for the stable-identity fix |
