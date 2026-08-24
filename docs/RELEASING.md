@@ -64,27 +64,39 @@ locally built release can be uploaded by hand if the runners are unavailable.
 ## Signing the Mac releases (optional, free, worth it)
 
 macOS ties the Accessibility grant to the bundle's *signature*. An ad-hoc signature is a hash of the
-bundle contents, so every build is a different app as far as macOS is concerned, and the user has to
-grant Accessibility again after each update. A stable self-signed certificate fixes that:
+bundle contents, so every build is a different app as far as macOS is concerned: the user grants
+Accessibility, the app updates itself, and the permission silently stops applying while its switch
+stays on. Worse, every copy that was ever run leaves its own entry in the Privacy list, all of them
+named the same, and only one of them is the one that matters.
+
+A stable certificate fixes it: the designated requirement becomes the bundle identifier plus that
+certificate, so every build signed with it is the same app, and the grant is given once.
 
 ```bash
-# On your Mac, once.
-./scripts/create-signing-identity.sh "Remote Input Bridge Local"
+# On your Mac, once. --force creates a certificate even if you already have an Apple Development
+# one: this key is going to be uploaded, and a disposable certificate made for the purpose is a
+# better thing to hand over than an Apple-issued identity tied to your developer account.
+export RIB_P12_PASSWORD="$(openssl rand -base64 24)"
+./scripts/create-signing-identity.sh --force --export-p12 /tmp/rib.p12 "Remote Input Bridge Local"
 
-# Export it for the runner.
-security find-certificate -c "Remote Input Bridge Local" -p > /tmp/rib.pem   # sanity check
-security export -t identities -f pkcs12 -k login.keychain-db \
-    -P "some-password" -o /tmp/rib.p12
-base64 -i /tmp/rib.p12 | pbcopy
+# Upload it. `gh secret set` reads standard input, so the key never reaches the shell history.
+base64 -i /tmp/rib.p12 | tr -d '\n' | gh secret set MAC_CERT_P12
+printf '%s' "$RIB_P12_PASSWORD" | gh secret set MAC_CERT_PASSWORD
+printf '%s' "Remote Input Bridge Local" | gh secret set MAC_CERT_NAME
+rm -f /tmp/rib.p12
 ```
 
-Then add three repository secrets (**Settings → Secrets and variables → Actions**):
+> Do **not** reach for `security export -t identities -f pkcs12`: it exports *every* identity in
+> the keychain, Apple-issued ones included, because it has no way to single one out. That is why
+> the script writes the PKCS#12 itself, from the key it just generated.
 
-| Secret | Value |
-|--------|-------|
-| `MAC_CERT_P12` | the base64 blob now on your clipboard |
-| `MAC_CERT_PASSWORD` | the password you gave `security export` |
-| `MAC_CERT_NAME` | `Remote Input Bridge Local` |
+The three secrets are `MAC_CERT_P12` (base64 of the file), `MAC_CERT_PASSWORD` and
+`MAC_CERT_NAME`. The same certificate should sign your local builds too, so that a locally
+installed app and an updated one are the same app as far as macOS is concerned:
+
+```bash
+RIB_SIGN_IDENTITY="Remote Input Bridge Local" ./scripts/build-mac-app.sh --install
+```
 
 The workflow picks them up on its own; without them it signs ad-hoc and everything still works,
 just with the permission prompt after each update. Note that a self-signed certificate does **not**
