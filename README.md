@@ -252,6 +252,11 @@ click apart, and the diagnostics line shows what each costs. Stored in
 Default modifier mapping is `Ctrl→Control`, `Alt→Option`, `Win→Command`, `Shift→Shift`; the first
 three are remappable (spec §15).
 
+**Mac key positions** (Mac settings → Modifier mapping) swaps Alt and the Windows key, so the key
+beside the space bar acts as Command the way it does on a Mac keyboard. It applies only to what is
+sent to the Mac — Windows keeps its own layout, which a keyboard's own hardware "Mac mode" cannot
+do, since that swaps the keys for both machines at once. Use one or the other, never both.
+
 ---
 
 ## Diagnostics

@@ -214,8 +214,25 @@ struct SettingsView: View {
             modifierRow("Windows Ctrl", model.binding(\.modifiers.control))
             modifierRow("Windows Alt", model.binding(\.modifiers.alt))
             modifierRow("Windows key", model.binding(\.modifiers.gui))
+            Toggle("Mac key positions (the key beside the space bar is Command)", isOn: macKeyPositions)
+                .padding(.top, 4)
+            Text("A Windows keyboard puts Alt beside the space bar; a Mac puts Command there. This swaps the two so your thumb finds Command where it expects it — and only for what is sent to the Mac, so Windows keeps its own layout. If the keyboard has a Mac mode of its own, use one or the other, not both: they cancel out.")
+                .font(.caption).foregroundStyle(.secondary)
             Text("Shift always maps to Shift.").font(.caption).foregroundStyle(.secondary)
         }
+    }
+
+    /// Derived from the mapping rather than stored beside it. A separate flag could disagree with
+    /// the three pickers above, and then neither would be the truth.
+    private var macKeyPositions: Binding<Bool> {
+        Binding(
+            get: { model.config.modifiers.alt == .command && model.config.modifiers.gui == .option },
+            set: { enabled in
+                model.config.modifiers.alt = enabled ? .command : .option
+                model.config.modifiers.gui = enabled ? .option : .command
+                model.configDidChange()
+            }
+        )
     }
 
     private func modifierRow(_ title: String, _ binding: Binding<ModifierRole>) -> some View {
