@@ -80,7 +80,9 @@ Name: "{userdesktop}\{#AppName}"; Filename: "{app}\{#ExeName}"; Tasks: desktopic
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "RemoteInputBridge"; ValueData: """{app}\{#ExeName}"""; Tasks: startup; Flags: uninsdeletevalue
 
 [Run]
-Filename: "{app}\{#ExeName}"; Description: "Start {#AppName} now"; Flags: nowait postinstall skipifsilent
+; --show because the point of starting it here is to see it: without a window the only evidence
+; the app is running is a tray icon Windows 11 hides by default.
+Filename: "{app}\{#ExeName}"; Parameters: "--show"; Description: "Start {#AppName} now"; Flags: nowait postinstall skipifsilent
 ; A silent install runs nothing by default, which for a self-update would mean the bridge stops
 ; when it updates. The app passes /RIBRESTART=1 to say "you interrupted me, put me back".
 Filename: "{app}\{#ExeName}"; Flags: nowait runasoriginaluser; Check: WantsRestart

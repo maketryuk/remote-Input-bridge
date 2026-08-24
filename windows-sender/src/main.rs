@@ -90,7 +90,7 @@ OPTIONS:
     --udp-port <port>   realtime movement port (default {udp})
     --interval <ms>     mouse aggregation interval: 1, 2, 4 or 8 (default 2)
     --pair <code>       pair with the Mac using the code it displays
-    --console           attach a console and log to it
+    --console           attach a console and log to it (never opened otherwise)
     --diagnostics       like --console, plus the per-second diagnostics line
     --show              open the status window at startup
     --no-tray           do not create a tray icon (console proof-of-concept mode)
@@ -161,7 +161,10 @@ fn main() {
 
     let cfg = build_config(&args);
     log::set_level(&cfg.log_level);
-    if args.console || cfg.diagnostics {
+    // Only ever on request. `diagnostics` defaults to on and belongs in the log file, so keying
+    // the console off it meant the installed app opened a console window on every launch and
+    // looked like a command line tool that had failed to do anything.
+    if args.console {
         attach_console();
     }
     if args.save {
@@ -303,7 +306,11 @@ fn run(args: &Args) {
         DispatchMessageW, GetMessageW, TranslateMessage, MSG,
     };
 
-    let window = ui::window::create(!args.no_tray, args.show || args.no_tray);
+    // A first run has no Mac address and no pairing, so it has something to ask. Leaving it to
+    // the tray icon is not an introduction: Windows 11 files new tray icons away in the overflow
+    // flyout, and an app that starts by showing nothing at all reads as an app that did not start.
+    let unconfigured = state::state().config().mac_host.is_empty();
+    let window = ui::window::create(!args.no_tray, args.show || args.no_tray || unconfigured);
     if window.is_null() {
         log::error("no window: the sender cannot receive Raw Input, aborting");
         return;

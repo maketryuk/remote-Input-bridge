@@ -378,7 +378,7 @@ fn build_controls(parent: HWND) {
         (ID_SUPPRESS, "Suppress local Windows input while the Mac is active"),
         (ID_AUTOCONNECT, "Connect automatically"),
         (ID_USE_UDP, "Send mouse movement over UDP (recommended)"),
-        (ID_DIAG_ON, "Print the diagnostics line to the console"),
+        (ID_DIAG_ON, "Write the diagnostics line to the log every second"),
         (ID_AUTOSTART, "Start with Windows"),
         (ID_AUTO_UPDATE, "Check for updates automatically"),
     ] {
