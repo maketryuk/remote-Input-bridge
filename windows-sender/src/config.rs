@@ -278,6 +278,39 @@ pub fn parse_hotkey(spec: &str) -> Option<Hotkey> {
     Some(Hotkey { mods, vk: vk? })
 }
 
+/// Renders a pressed combination back into the text [`parse_hotkey`] accepts, so a key the user
+/// actually pressed can be shown in the settings window and stored in the config file.
+///
+/// Returns `None` for anything that is not expressible - a lone modifier, or a key with no name -
+/// rather than inventing a spelling that would not parse back.
+pub fn format_hotkey(mods: u16, vk: u16) -> Option<String> {
+    use crate::protocol::modmask;
+    let mut parts = Vec::new();
+    for (group, name) in [
+        (modmask::ANY_CTRL, "Ctrl"),
+        (modmask::ANY_ALT, "Alt"),
+        (modmask::ANY_SHIFT, "Shift"),
+        (modmask::ANY_GUI, "Win"),
+    ] {
+        if mods & group != 0 {
+            parts.push(name.to_string());
+        }
+    }
+    let key = if let Some((name, _)) = VK_NAMES.iter().find(|(_, code)| *code == vk) {
+        (*name).to_string()
+    } else if (0x70..=0x87).contains(&vk) {
+        format!("F{}", vk - 0x70 + 1)
+    } else if (b'0' as u16..=b'9' as u16).contains(&vk)
+        || (b'A' as u16..=b'Z' as u16).contains(&vk)
+    {
+        (vk as u8 as char).to_string()
+    } else {
+        return None;
+    };
+    parts.push(key);
+    Some(parts.join("+"))
+}
+
 /// True when `pressed` (a left/right aware mask) satisfies every modifier group in `required`
 /// and carries no extra modifier group.
 pub fn mods_match(required: u16, pressed: u16) -> bool {
@@ -328,6 +361,34 @@ mod tests {
             !mods_match(need, modmask::L_CTRL | modmask::L_ALT | modmask::L_SHIFT),
             "Ctrl+Alt+Shift+Left must not fire the Ctrl+Alt+Left hotkey"
         );
+    }
+
+    #[test]
+    fn formatting_round_trips_through_parsing() {
+        for text in ["Ctrl+Alt+Left", "Ctrl+Alt+Shift+Escape", "Win+F5", "F13", "Ctrl+Q", "Home"] {
+            let parsed = parse_hotkey(text).expect(text);
+            let formatted = format_hotkey(parsed.mods, parsed.vk).expect(text);
+            assert_eq!(
+                parse_hotkey(&formatted),
+                Some(parsed),
+                "{text} formatted to {formatted}, which parses to something else"
+            );
+        }
+    }
+
+    #[test]
+    fn a_key_with_no_spelling_is_refused_rather_than_guessed() {
+        // 0xE7 is VK_PACKET: real, pressable through some software, and not something
+        // parse_hotkey could read back.
+        assert_eq!(format_hotkey(0, 0xE7), None);
+        assert_eq!(format_hotkey(modmask::ANY_CTRL, 0xE7), None);
+    }
+
+    #[test]
+    fn function_keys_and_letters_come_back_as_themselves() {
+        assert_eq!(format_hotkey(0, 0x7C), Some("F13".into()));
+        assert_eq!(format_hotkey(0, 0x87), Some("F24".into()));
+        assert_eq!(format_hotkey(modmask::ANY_GUI, b'K' as u16), Some("Win+K".into()));
     }
 
     #[test]

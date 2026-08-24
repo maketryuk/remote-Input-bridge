@@ -212,7 +212,18 @@ switched off.
 They are recognised on Windows and never forwarded (spec §16). All three are editable in the
 settings window; a spec that does not parse is rejected with an explanation instead of being
 silently stored. Format: modifiers `Ctrl` / `Alt` / `Shift` / `Win` plus one key
-(`Left`, `Right`, `Escape`, `F5`, `A`, …).
+(`Left`, `Right`, `Escape`, `F5`, `A`, …). A key with no modifiers is allowed.
+
+**Record** beside each field binds whatever you press next, which is the only way to bind anything
+behind an `Fn` key: the keyboard resolves `Fn` in its own firmware and sends a different key code
+altogether, so the system never sees `Fn` and no hotkey can name it. Press Record, press the
+combination, and the field fills in with what actually arrived — often `Home` or `End` for
+`Fn`+arrows on a 65 % board. Press **Save and apply** to keep it.
+
+> A hotkey is swallowed on Windows whenever it fires, so binding a key you otherwise use — `Home`,
+> say — costs you that key everywhere else on the machine. If your keyboard has a configurator,
+> remapping `Fn`+arrow to `F13` and `F14` avoids the collision entirely: real keys, understood by
+> Windows, claimed by nothing.
 
 While the Mac has the input, the Windows-side low-level hooks swallow local clicks, wheel and
 keystrokes so the same action is not acted on twice, and the Windows cursor is pinned in place.

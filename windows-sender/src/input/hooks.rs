@@ -238,6 +238,18 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
             };
 
             if down {
+                // Recording a hotkey takes precedence over firing one: the whole point is to
+                // capture the combination rather than act on it. Modifiers alone are ignored, so
+                // holding Ctrl while reaching for the key does not end the capture early.
+                if let Some(control) = input::capture_target() {
+                    if bit == 0 {
+                        if let Some(text) = crate::config::format_hotkey(mods, vk) {
+                            input::complete_capture(control, text);
+                        }
+                        SWALLOWED[vk as usize].store(true, Relaxed);
+                        return 1;
+                    }
+                }
                 if bit == 0 {
                     if let Some(action) = input::hotkeys().match_vk(vk, mods) {
                         SWALLOWED[vk as usize].store(true, Relaxed);

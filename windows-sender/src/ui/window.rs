@@ -373,15 +373,30 @@ fn build_controls(parent: HWND) {
         unsafe { SendMessageW(combo, CB_ADDSTRING, 0, label.as_ptr() as LPARAM) };
     }
     y += ROW;
-    add_control(parent, "STATIC", "Switch to Mac hotkey", 0, LABEL_X, y + 3, LABEL_W, 20, 0);
-    add_control(parent, "EDIT", "", edit_style, FIELD_X, y, 180, 22, ID_HOTKEY_MAC);
-    y += ROW;
-    add_control(parent, "STATIC", "Switch to Windows hotkey", 0, LABEL_X, y + 3, LABEL_W, 20, 0);
-    add_control(parent, "EDIT", "", edit_style, FIELD_X, y, 180, 22, ID_HOTKEY_WINDOWS);
-    y += ROW;
-    add_control(parent, "STATIC", "Emergency hotkey", 0, LABEL_X, y + 3, LABEL_W, 20, 0);
-    add_control(parent, "EDIT", "", edit_style, FIELD_X, y, 180, 22, ID_HOTKEY_EMERGENCY);
-    y += ROW + 8;
+    for (index, (label, field)) in [
+        ("Switch to Mac hotkey", ID_HOTKEY_MAC),
+        ("Switch to Windows hotkey", ID_HOTKEY_WINDOWS),
+        ("Emergency hotkey", ID_HOTKEY_EMERGENCY),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        add_control(parent, "STATIC", label, 0, LABEL_X, y + 3, LABEL_W, 20, 0);
+        add_control(parent, "EDIT", "", edit_style, FIELD_X, y, 180, 22, field);
+        add_control(
+            parent,
+            "BUTTON",
+            "Record",
+            WS_TABSTOP,
+            FIELD_X + 186,
+            y - 1,
+            92,
+            24,
+            cmd::RECORD_BASE + index as u32,
+        );
+        y += ROW;
+    }
+    y += 8;
 
     for (id, text) in [
         (ID_EDGE, "Switch by screen edge (Mac is on the left)"),
@@ -532,6 +547,21 @@ fn refresh_status(parent: HWND) {
     drop(info);
     set_text(parent, ID_ERROR, &message);
 
+    if let Some((control, text)) = crate::input::take_capture() {
+        set_text(parent, control, &text);
+    }
+    for (index, field) in [ID_HOTKEY_MAC, ID_HOTKEY_WINDOWS, ID_HOTKEY_EMERGENCY]
+        .into_iter()
+        .enumerate()
+    {
+        let recording = crate::input::capture_target() == Some(field);
+        set_text(
+            parent,
+            cmd::RECORD_BASE + index as u32,
+            if recording { "Press a key..." } else { "Record" },
+        );
+    }
+
     set_text(parent, ID_UPDATE, &crate::update::summary());
     let button = control(parent, cmd::CHECK_UPDATES);
     if !button.is_null() {
@@ -651,6 +681,18 @@ fn handle_command(parent: HWND, id: u32) {
                 st.send(NetMsg::Pair(code));
                 set_text(parent, ID_PAIR_CODE, "");
             }
+        }
+        _ if (cmd::RECORD_BASE..cmd::RECORD_BASE + 3).contains(&id) => {
+            let field = [ID_HOTKEY_MAC, ID_HOTKEY_WINDOWS, ID_HOTKEY_EMERGENCY]
+                [(id - cmd::RECORD_BASE) as usize];
+            if crate::input::capture_target() == Some(field) {
+                crate::input::cancel_capture();
+            } else {
+                // Press the combination you want; whatever the keyboard actually sends is what
+                // gets written down. For anything behind an Fn key that is the only way to know.
+                crate::input::begin_capture(field);
+            }
+            refresh_status(parent);
         }
         cmd::OPEN_CONFIG_DIR => open_config_dir(),
         cmd::CHECK_UPDATES => {

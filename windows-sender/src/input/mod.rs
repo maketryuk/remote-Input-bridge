@@ -12,7 +12,7 @@ pub mod hooks;
 #[cfg(windows)]
 pub mod raw_input;
 
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
 use std::sync::{Mutex, RwLock};
 
 use crate::config::{mods_match, parse_hotkey, Config, Hotkey};
@@ -201,6 +201,56 @@ pub fn set_hotkeys(cfg: &Config) {
         crate::log::warn(&format!("unparsable hotkey: {}", cfg.hotkey_emergency_local));
     }
     *HOTKEYS.write().unwrap() = parsed;
+}
+
+// ---------------------------------------------------------------------------
+// Hotkey capture
+// ---------------------------------------------------------------------------
+
+/// The settings window can ask for the *next* key pressed instead of making the user spell one out.
+///
+/// That is the only way to bind anything behind an `Fn` key: the keyboard resolves `Fn` in its own
+/// firmware and sends a different key code entirely, so what the system receives - and what a
+/// hotkey has to name - is knowable only by pressing it and looking.
+static CAPTURE_FOR: AtomicU32 = AtomicU32::new(0);
+static CAPTURE_UNTIL_US: AtomicU64 = AtomicU64::new(0);
+static CAPTURED: Mutex<Option<(u32, String)>> = Mutex::new(None);
+
+/// Long enough to reach for an awkward combination, short enough that a forgotten capture does not
+/// swallow a keystroke minutes later.
+const CAPTURE_WINDOW_US: u64 = 6_000_000;
+
+pub fn begin_capture(control: u32) {
+    CAPTURE_UNTIL_US.store(state().now_us() + CAPTURE_WINDOW_US, Relaxed);
+    CAPTURE_FOR.store(control, Relaxed);
+}
+
+/// Which control is waiting for a key, if the wait has not expired.
+pub fn capture_target() -> Option<u32> {
+    let control = CAPTURE_FOR.load(Relaxed);
+    if control == 0 {
+        return None;
+    }
+    if state().now_us() > CAPTURE_UNTIL_US.load(Relaxed) {
+        CAPTURE_FOR.store(0, Relaxed);
+        return None;
+    }
+    Some(control)
+}
+
+pub fn cancel_capture() {
+    CAPTURE_FOR.store(0, Relaxed);
+}
+
+pub fn complete_capture(control: u32, text: String) {
+    CAPTURE_FOR.store(0, Relaxed);
+    *CAPTURED.lock().unwrap() = Some((control, text));
+    crate::ui::refresh();
+}
+
+/// Consumed by the settings window, which owns the field the text belongs in.
+pub fn take_capture() -> Option<(u32, String)> {
+    CAPTURED.lock().unwrap().take()
 }
 
 pub fn hooks_active() -> bool {

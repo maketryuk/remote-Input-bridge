@@ -21,6 +21,8 @@ pub mod cmd {
     pub const TOGGLE_EDGE: u32 = 108;
     pub const FORCE_LOCAL: u32 = 109;
     pub const CHECK_UPDATES: u32 = 110;
+    /// `RECORD_BASE + index` into the three hotkey fields, in the order they appear.
+    pub const RECORD_BASE: u32 = 111;
     /// `INTERVAL_BASE + index` into [`crate::config::MOUSE_INTERVAL_CHOICES_MS`].
     pub const INTERVAL_BASE: u32 = 120;
 }
