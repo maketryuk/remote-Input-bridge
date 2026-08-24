@@ -41,7 +41,7 @@ connected mouse, including a 1000 Hz gaming mouse.** Everything else is subordin
 
 | Problem | What this project does |
 |---------|------------------------|
-| A hook that stops being called takes the input with it | Raw Input is the only source of input content, and the hooks only ever *hide* input from Windows. A low-level hook is not called for input aimed at a window of higher integrity level, so anything that depended on the hook would silently stop working depending on which application had focus. Raw Input has no such restriction |
+| A hook that stops being called takes the input with it | Every event has a source that survives: movement comes from Raw Input, which is delivered whatever window has focus. Buttons, the wheel and keys are read from the hook *because the hook swallowed them* — a low-level hook that returns non-zero drops the event before the system turns it into Raw Input, so what it hides it must also forward. When the hook is skipped, which Windows does for input aimed at a window of higher integrity level, nothing is swallowed and Raw Input delivers it as usual |
 | A 1000 Hz mouse produces 1000 events/s | `GetRawInputBuffer` drains events in batches; movement is two `fetch_add`s on cumulative counters, nothing more |
 | 1000 packets/s is a burst generator | A separate thread on a **high-resolution waitable timer** samples those counters every 1/2/4/8 ms and sends one packet (spec §9) |
 | A lost UDP packet must not shift the cursor forever | Packets carry **cumulative totals**, not deltas. The next packet to arrive re-establishes the truth on its own (spec §10.2) |
@@ -214,8 +214,18 @@ settings window; a spec that does not parse is rejected with an explanation inst
 silently stored. Format: modifiers `Ctrl` / `Alt` / `Shift` / `Win` plus one key
 (`Left`, `Right`, `Escape`, `F5`, `A`, …).
 
-While the Mac has the input, the Windows-side low-level hooks swallow local mouse and keyboard
-events so the same movement is not acted on twice, and the Windows cursor stays put.
+While the Mac has the input, the Windows-side low-level hooks swallow local clicks, wheel and
+keystrokes so the same action is not acted on twice, and the Windows cursor is pinned in place.
+
+**While Windows has the input, the mouse hook is removed entirely.** It sits on the path of every
+report a 1000 Hz mouse produces, and the system delivers that input to nobody until the callback
+returns — so when nothing needs suppressing, the cheapest thing this app can do is not be on that
+path at all. It comes back the instant the input goes to the Mac, or stays if edge switching is on,
+which needs it. The keyboard hook is kept: it fires at typing speed, and it is what stops
+`Ctrl+Alt+←` from also reaching whatever has focus.
+
+Nothing goes out over the network while Windows owns the input either, beyond a heartbeat roughly
+three times a second — the movement stream only exists while the Mac is the target.
 
 ---
 

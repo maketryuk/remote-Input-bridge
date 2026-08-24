@@ -71,20 +71,78 @@ const CLIP_REFRESH_US: u64 = 50_000;
 
 pub fn install() -> bool {
     refresh_screen_bounds();
-    let keyboard =
+    let keyboard = install_keyboard();
+    apply_mouse_hook();
+    keyboard
+}
+
+fn install_keyboard() -> bool {
+    if !KEYBOARD_HOOK.load(Relaxed).is_null() {
+        return true;
+    }
+    let handle =
         unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), ptr::null_mut(), 0) };
-    let mouse = unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), ptr::null_mut(), 0) };
-    KEYBOARD_HOOK.store(keyboard, Relaxed);
-    MOUSE_HOOK.store(mouse, Relaxed);
-    let ok = !keyboard.is_null() && !mouse.is_null();
-    input::set_hooks_active(ok);
-    if !ok {
+    KEYBOARD_HOOK.store(handle, Relaxed);
+    if handle.is_null() {
         crate::log::warn(
-            "could not install the low-level input hooks; hotkeys still work through Raw Input, \
-             but local input will not be suppressed",
+            "could not install the low-level keyboard hook; hotkeys still work through Raw Input, \
+             but they will also reach whatever has focus, and keystrokes will not be suppressed",
         );
     }
-    ok
+    update_active();
+    !handle.is_null()
+}
+
+/// Adds or removes the mouse hook so that it only exists while something needs it.
+///
+/// This is the hook that costs something. It sits on the path of every report a 1000 Hz mouse
+/// produces, and Windows delivers that input to nobody until the callback returns - so while a game
+/// is running and the input belongs to Windows, the cheapest thing this app can do is not be there
+/// at all. It is needed only while the Mac owns the input (to swallow buttons and the wheel) or
+/// while edge switching is on (to notice the pointer reaching the edge).
+///
+/// The keyboard hook is not treated this way on purpose. It fires at typing speed, so it costs
+/// nothing worth measuring, and it is what stops `Ctrl+Alt+Left` from also reaching whatever has
+/// focus - on an Intel graphics driver that same chord rotates the screen.
+///
+/// Must be called from the thread that owns the message loop: a low-level hook is delivered to the
+/// thread that installed it, and a hook installed on a thread that does not pump messages never
+/// fires.
+pub fn apply_mouse_hook() {
+    let st = state();
+    let needed = (st.target() == Target::RemoteMac && st.suppress.load(Relaxed))
+        || st.edge_switch.load(Relaxed);
+    let present = !MOUSE_HOOK.load(Relaxed).is_null();
+    if needed == present {
+        return;
+    }
+    if needed {
+        let handle =
+            unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), ptr::null_mut(), 0) };
+        MOUSE_HOOK.store(handle, Relaxed);
+        if handle.is_null() {
+            crate::log::warn(
+                "could not install the low-level mouse hook; local clicks and the wheel will not \
+                 be suppressed while the Mac has the input",
+            );
+        } else {
+            crate::log::debug("mouse hook installed");
+        }
+    } else {
+        let handle = MOUSE_HOOK.swap(ptr::null_mut(), Relaxed);
+        if !handle.is_null() {
+            unsafe { UnhookWindowsHookEx(handle) };
+            crate::log::debug("mouse hook removed; nothing of ours is on the input path");
+        }
+    }
+    update_active();
+}
+
+/// Suppression needs both hooks: one swallows keys, the other buttons and the wheel.
+fn update_active() {
+    let active =
+        !KEYBOARD_HOOK.load(Relaxed).is_null() && !MOUSE_HOOK.load(Relaxed).is_null();
+    input::set_hooks_active(active);
 }
 
 pub fn uninstall() {

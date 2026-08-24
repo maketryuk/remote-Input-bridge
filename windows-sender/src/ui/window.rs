@@ -740,6 +740,9 @@ unsafe extern "system" fn wnd_proc(
             } else {
                 super::banner::hide();
             }
+            // Here rather than at the switch itself: a low-level hook is delivered to the thread
+            // that installed it, and this is the only thread with a message loop.
+            hooks::apply_mouse_hook();
             0
         }
         WM_TIMER => {
@@ -747,6 +750,9 @@ unsafe extern "system" fn wnd_proc(
                 refresh_status(window);
                 // The system clears the clip on focus changes, so it has to be re-applied.
                 hooks::refresh_cursor_clip();
+                // Idempotent, and cheap when nothing has changed: whatever route altered the
+                // target or the settings, the hooks converge on what is actually needed.
+                hooks::apply_mouse_hook();
             }
             0
         }
