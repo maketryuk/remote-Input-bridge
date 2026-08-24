@@ -92,8 +92,13 @@ jobs:
               "$RUNNER_TEMP/build.keychain" >/dev/null
           # A self-signed certificate is not trusted by default, and codesign refuses to use an
           # untrusted identity. An Apple-issued one is already trusted and this is a no-op for it.
-          openssl pkcs12 -in "$RUNNER_TEMP/identity.p12" -clcerts -nokeys \
-              -passin pass:"$MAC_CERT_PASSWORD" -out "$RUNNER_TEMP/identity.pem"
+          #
+          # The certificate comes out of the keychain it was just imported into, not out of the
+          # PKCS#12: Apple's Security framework only accepts the older PKCS#12 algorithms, and
+          # OpenSSL 3 refuses to read those back without its legacy provider ("unsupported
+          # algorithm RC2-40-CBC"). Asking the keychain sidesteps the whole question.
+          security find-certificate -c "$MAC_CERT_NAME" -p "$RUNNER_TEMP/build.keychain" \
+              > "$RUNNER_TEMP/identity.pem"
           sudo security add-trusted-cert -d -r trustRoot -p codeSign \
               -k /Library/Keychains/System.keychain "$RUNNER_TEMP/identity.pem"
           echo "RIB_SIGN_IDENTITY=$MAC_CERT_NAME" >> "$GITHUB_ENV"
