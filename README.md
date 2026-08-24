@@ -326,10 +326,12 @@ These are deliberate MVP boundaries, not bugs:
   reading Raw Input or DirectInput directly, which is most games, still sees device movement.
 
   The mitigation is focus: switching to the Mac raises a small always-on-top window and gives it
-  the foreground, and virtually every game ignores input while it is not in front. A game in
-  exclusive full screen is minimised by that; one in a window or borderless merely loses focus.
-  The window that had the focus gets it back when the input returns. Still no kernel driver, no
-  injection, nothing an anti-cheat has cause to object to (spec §20, §21).
+  the foreground, and virtually every game ignores input while it is not in front. Being on top is
+  not the same as being in front, though, and Windows only lets a process change the foreground
+  window under conditions a background tray app does not always meet — so the result is checked,
+  and a window that will not give up the foreground is minimised instead, then restored when the
+  input comes back. The log says which window that was. Still no kernel driver, no injection,
+  nothing an anti-cheat has cause to object to (spec §20, §21).
 * **Payloads are authenticated, not encrypted.** Every datagram and frame is HMAC-tagged with a
   per-session key and rejected on replay, so an unpaired device cannot inject input. Keystrokes
   are not confidential on the wire. Trusted LAN only; TLS/DTLS is v2.

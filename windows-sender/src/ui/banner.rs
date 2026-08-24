@@ -15,7 +15,7 @@
 //! the one you are typing in.
 
 use std::ptr;
-use std::sync::atomic::{AtomicPtr, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering::Relaxed};
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
@@ -24,6 +24,7 @@ use windows_sys::Win32::Graphics::Gdi::{
     TRANSPARENT,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 const WIDTH: i32 = 360;
@@ -37,6 +38,9 @@ const HINT_COLOUR: u32 = 0x00C8_B4A8;
 static BANNER: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(ptr::null_mut());
 /// Whatever had the focus when the input left, so it can have it back.
 static PREVIOUS: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(ptr::null_mut());
+/// Set when [`PREVIOUS`] had to be minimised because it would not give up the focus, so that
+/// handing the input back can put it exactly as it was.
+static MINIMISED: AtomicBool = AtomicBool::new(false);
 
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
@@ -98,22 +102,55 @@ pub fn show() {
     }
     unsafe {
         ShowWindow(banner, SW_SHOW);
-        SetWindowPos(
-            banner,
-            HWND_TOPMOST,
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
-        );
-        // Permitted because this process received the last input event - the hotkey that got us
-        // here. Nothing to do if the system refuses beyond saying so.
-        if SetForegroundWindow(banner) == 0 {
-            crate::log::debug("the system refused to move the focus to the status banner");
-        }
+        SetWindowPos(banner, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
         InvalidateRect(banner, ptr::null(), 1);
+
+        // Being on top is not the same as being in front. Windows only lets a process change the
+        // foreground window if it already owns it or received the last input event - and the
+        // hotkey that got us here was swallowed by our own hook, so from the system's point of
+        // view it may have gone nowhere. Attaching to the input queue of the thread that does own
+        // the foreground makes the call succeed: for as long as they are attached, the system
+        // treats the two threads as one.
+        let ours = GetCurrentThreadId();
+        let theirs = if previous.is_null() {
+            0
+        } else {
+            GetWindowThreadProcessId(previous, ptr::null_mut())
+        };
+        let attached = theirs != 0 && theirs != ours && AttachThreadInput(ours, theirs, 1) != 0;
+        SetForegroundWindow(banner);
+        BringWindowToTop(banner);
+        if attached {
+            AttachThreadInput(ours, theirs, 0);
+        }
+
+        // Verified rather than assumed. A window that keeps the foreground keeps reading the mouse
+        // through Raw Input, which is exactly the case this banner exists to prevent.
+        MINIMISED.store(false, Relaxed);
+        if GetForegroundWindow() != banner && !previous.is_null() {
+            crate::log::warn(&format!(
+                "\"{}\" would not give up the foreground; minimising it so it stops reading the \
+                 mouse",
+                window_title(previous)
+            ));
+            ShowWindow(previous, SW_MINIMIZE);
+            MINIMISED.store(true, Relaxed);
+        } else {
+            crate::log::info(&format!("input handed to the Mac; \"{}\" is no longer in front", window_title(previous)));
+        }
     }
+}
+
+fn window_title(window: HWND) -> String {
+    if window.is_null() {
+        return "the desktop".into();
+    }
+    let mut buffer = [0u16; 128];
+    let written = unsafe { GetWindowTextW(window, buffer.as_mut_ptr(), buffer.len() as i32) };
+    if written <= 0 {
+        return "an untitled window".into();
+    }
+    String::from_utf16_lossy(&buffer[..written as usize])
 }
 
 /// Hides it and hands the focus back to the window that had it.
@@ -125,6 +162,11 @@ pub fn hide() {
     unsafe { ShowWindow(banner, SW_HIDE) };
     let previous = PREVIOUS.swap(ptr::null_mut(), Relaxed);
     if !previous.is_null() && unsafe { IsWindow(previous) } != 0 {
+        // Restore before activating: a window we minimised on the way out has to be put back
+        // exactly as it was, or handing the input back would leave the game on the task bar.
+        if MINIMISED.swap(false, Relaxed) {
+            unsafe { ShowWindow(previous, SW_RESTORE) };
+        }
         unsafe { SetForegroundWindow(previous) };
     }
 }
