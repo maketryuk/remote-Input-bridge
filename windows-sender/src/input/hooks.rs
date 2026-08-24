@@ -13,9 +13,13 @@
 //! * **Movement** is never swallowed. Raw Input keeps delivering unaccelerated device deltas at
 //!   full rate, and the local cursor is held still with `ClipCursor` instead. Local windows do
 //!   receive `WM_MOUSEMOVE`, but the pointer cannot move, so nothing reacts to it.
-//! * **Buttons, wheel and keys** are swallowed here and read *from the hook*, which is the only
-//!   place they still exist once suppressed. They are discrete and low-rate, so the hook's view
-//!   of them is exactly as good as Raw Input's.
+//! * **Buttons, wheel and keys** are swallowed here and forwarded *from here*, because by the
+//!   same rule this callback is the last place they exist. They are discrete and low-rate, so the
+//!   hook's view of them is exactly as good as Raw Input's.
+//!
+//! Nothing is ever forwarded twice: an event this hook swallows never reaches Raw Input, and an
+//! event it does not swallow - including everything aimed at a window of higher integrity level,
+//! which skips the hook entirely - is delivered by Raw Input as usual.
 //!
 //! These callbacks sit on the critical path of every physical event, so they touch nothing but
 //! atomics and the parsed hotkey table. They keep their own modifier mask rather than reaching
@@ -33,13 +37,15 @@ use windows_sys::Win32::Foundation::{POINT, RECT};
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, ClipCursor, GetCursorPos, GetSystemMetrics, SetWindowsHookExW,
-    UnhookWindowsHookEx, HC_ACTION, KBDLLHOOKSTRUCT, LLKHF_INJECTED, LLMHF_INJECTED,
-    MSLLHOOKSTRUCT, SM_XVIRTUALSCREEN, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_MOUSEMOVE,
-    WM_SYSKEYDOWN,
+    UnhookWindowsHookEx, HC_ACTION, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLKHF_INJECTED,
+    LLMHF_INJECTED, MSLLHOOKSTRUCT, SM_XVIRTUALSCREEN, WH_KEYBOARD_LL, WH_MOUSE_LL,
+    WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
+    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_XBUTTONDOWN,
+    WM_XBUTTONUP,
 };
 
-use crate::input;
-use crate::protocol::modmask;
+use crate::input::{self, keymap, KeyDecision};
+use crate::protocol::{button, modmask};
 use crate::state::{state, Target};
 
 static KEYBOARD_HOOK: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(ptr::null_mut());
@@ -59,6 +65,9 @@ const EDGE_COOLDOWN_US: u64 = 700_000;
 static CLIP_ACTIVE: AtomicBool = AtomicBool::new(false);
 static CLIP_X: AtomicI32 = AtomicI32::new(0);
 static CLIP_Y: AtomicI32 = AtomicI32::new(0);
+/// When the clip was last re-applied, in microseconds since process start.
+static LAST_CLIP_US: AtomicU64 = AtomicU64::new(0);
+const CLIP_REFRESH_US: u64 = 50_000;
 
 pub fn install() -> bool {
     refresh_screen_bounds();
@@ -179,16 +188,68 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
                 return 1;
             }
 
-            // Suppression only: the keystroke is hidden from Windows here, but it is Raw Input
-            // that reports it to the Mac. Measured on real hardware, a swallowed event still
-            // arrives as Raw Input - and unlike this hook, Raw Input is delivered whatever window
-            // has focus, so it is the one source that never silently stops.
             if state().suppress.load(Relaxed) {
+                forward_swallowed_key(info, down);
                 return 1;
             }
         }
     }
     CallNextHookEx(ptr::null_mut(), code, wparam, lparam)
+}
+
+/// Feeds a keystroke this hook is about to swallow into the forwarding path.
+///
+/// It has to happen here. Returning non-zero does not merely hide the event from other
+/// applications - the system drops it before it becomes Raw Input, so a key swallowed and not
+/// forwarded from this callback is simply gone. That is what left the Mac with a working mouse and
+/// a dead keyboard while local suppression was on.
+fn forward_swallowed_key(info: &KBDLLHOOKSTRUCT, down: bool) {
+    let hid = keymap::hid_usage(
+        info.scanCode as u16,
+        info.flags & LLKHF_EXTENDED != 0,
+        info.vkCode as u16,
+    );
+    if hid == keymap::HID_NONE {
+        return;
+    }
+    state().tel.raw_kbd_events.fetch_add(1, Relaxed);
+    if let KeyDecision::Hotkey(action) = input::handle_key_event(hid, down) {
+        input::dispatch(action);
+    }
+}
+
+/// The same for a button, wheel notch or horizontal wheel notch.
+fn forward_swallowed_mouse(info: &MSLLHOOKSTRUCT, message: u32) {
+    let st = state();
+    // Both the wheel delta and the X button index live in the high word of mouseData.
+    let high = (info.mouseData >> 16) as u16;
+    let (index, down) = match message {
+        WM_LBUTTONDOWN => (button::LEFT, true),
+        WM_LBUTTONUP => (button::LEFT, false),
+        WM_RBUTTONDOWN => (button::RIGHT, true),
+        WM_RBUTTONUP => (button::RIGHT, false),
+        WM_MBUTTONDOWN => (button::MIDDLE, true),
+        WM_MBUTTONUP => (button::MIDDLE, false),
+        // XBUTTON1 is "back", XBUTTON2 is "forward".
+        WM_XBUTTONDOWN | WM_XBUTTONUP => (
+            if high == 2 { button::FORWARD } else { button::BACK },
+            message == WM_XBUTTONDOWN,
+        ),
+        // A signed WHEEL_DELTA multiple, 120 to the notch, exactly as Raw Input reports it.
+        WM_MOUSEWHEEL => {
+            st.tel.raw_mouse_events.fetch_add(1, Relaxed);
+            input::handle_scroll(0, high as i16 as i32);
+            return;
+        }
+        WM_MOUSEHWHEEL => {
+            st.tel.raw_mouse_events.fetch_add(1, Relaxed);
+            input::handle_scroll(high as i16 as i32, 0);
+            return;
+        }
+        _ => return,
+    };
+    st.tel.raw_mouse_events.fetch_add(1, Relaxed);
+    input::handle_button_event(index, down);
 }
 
 // ---------------------------------------------------------------------------
@@ -203,15 +264,25 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
             let message = wparam as u32;
 
             if st.suppress.load(Relaxed) {
-                let handled = match message {
-                    // Movement is deliberately passed through: swallowing it would also stop
-                    // Raw Input from delivering the deltas we forward. ClipCursor keeps the
-                    // local pointer still instead.
-                    WM_MOUSEMOVE => false,
-                    // Buttons and wheel are hidden from Windows here and reported by Raw Input.
-                    _ => true,
-                };
-                if handled {
+                if message == WM_MOUSEMOVE {
+                    // Movement is deliberately passed through: swallowing it would also stop Raw
+                    // Input from delivering the deltas we forward. ClipCursor keeps the local
+                    // pointer still instead - but the system drops the clip on every foreground
+                    // change, and waiting up to half a second for the UI timer to notice is long
+                    // enough for the local cursor to visibly run away. Movement is the moment it
+                    // matters, so it is re-applied from here, rate limited so a 1000 Hz mouse does
+                    // not mean 1000 calls a second.
+                    if CLIP_ACTIVE.load(Relaxed) {
+                        let now = st.now_us();
+                        if now.saturating_sub(LAST_CLIP_US.load(Relaxed)) > CLIP_REFRESH_US {
+                            LAST_CLIP_US.store(now, Relaxed);
+                            apply_cursor_clip();
+                        }
+                    }
+                } else {
+                    // Buttons and the wheel are hidden from Windows here, so - like keys - this is
+                    // the last place they exist and the place they have to be forwarded from.
+                    forward_swallowed_mouse(info, message);
                     return 1;
                 }
             } else if message == WM_MOUSEMOVE
