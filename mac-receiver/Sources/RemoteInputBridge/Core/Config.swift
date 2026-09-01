@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 enum SchedulerMode: String, Codable, CaseIterable, Identifiable {
     /// Post a CGEvent the instant a datagram is parsed. Lowest latency, most exposed to bursts.
@@ -162,14 +163,54 @@ struct KeyStore: Codable {
     /// clientID (hex) -> device key (hex)
     var devices: [String: String] = [:]
     var names: [String: String] = [:]
+    /// This Mac's own identity, handed to senders so they can recognise it again.
+    ///
+    /// Without it a sender has nothing to file its device key under but the address it was told to
+    /// dial, and an address is not an identity: a new DHCP lease, or simply switching from
+    /// 192.168.1.5 to the .local name, made an already-paired Mac look like a stranger and asked
+    /// for the pairing code again.
+    var serverID: String = ""
+
+    /// Created once and kept, so it survives everything except deleting keys.json.
+    static func loadWithIdentity() -> KeyStore {
+        var store = load()
+        if store.serverID.isEmpty {
+            var bytes = [UInt8](repeating: 0, count: 16)
+            _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+            store.serverID = Data(bytes).hexString
+            store.save()
+        }
+        return store
+    }
 
     static func fileURL() -> URL { Config.directory().appendingPathComponent("keys.json") }
 
+    /// Decoded key by key, because the synthesised decoder treats a missing one as a hard error
+    /// even when the property has a default. This file holds credentials: adding a field to it
+    /// must never be able to make the previous version unreadable, and adding `serverID` did
+    /// exactly that once - every paired PC was forgotten and had to be paired again.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        devices = try container.decodeIfPresent([String: String].self, forKey: .devices) ?? [:]
+        names = try container.decodeIfPresent([String: String].self, forKey: .names) ?? [:]
+        serverID = try container.decodeIfPresent(String.self, forKey: .serverID) ?? ""
+    }
+
+    init() {}
+
     static func load() -> KeyStore {
-        guard let data = try? Data(contentsOf: fileURL()),
-              let store = try? JSONDecoder().decode(KeyStore.self, from: data)
-        else { return KeyStore() }
-        return store
+        guard let data = try? Data(contentsOf: fileURL()) else { return KeyStore() }
+        do {
+            return try JSONDecoder().decode(KeyStore.self, from: data)
+        } catch {
+            // Never write over something we could not read: the keys in it are not reproducible,
+            // and a copy costs nothing next to pairing every machine again.
+            let rescued = fileURL().appendingPathExtension("unreadable")
+            try? FileManager.default.removeItem(at: rescued)
+            try? FileManager.default.copyItem(at: fileURL(), to: rescued)
+            Log.error("keys.json could not be read (\(error)); a copy is at \(rescued.path)")
+            return KeyStore()
+        }
     }
 
     func save() {

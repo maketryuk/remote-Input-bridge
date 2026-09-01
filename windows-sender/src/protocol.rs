@@ -54,6 +54,11 @@ pub struct HelloAck {
     pub protocol_version: u32,
     #[serde(default)]
     pub server_name: String,
+    /// A stable identity for the Mac itself, which is what the device key is filed under. Empty
+    /// when talking to a receiver old enough not to send one, in which case the address has to
+    /// stand in for it.
+    #[serde(default)]
+    pub server_id: String,
     #[serde(default)]
     pub server_nonce: String,
     #[serde(default)]

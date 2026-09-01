@@ -378,6 +378,7 @@ These are deliberate MVP boundaries, not bugs:
 | Windows says "the Mac rejected our key" |  The two sides held different device keys. The sender now discards a key the Mac refuses and asks to pair again; show a new code on the Mac and press Pair |
 | The receiver keeps swapping between two senders | Only one session exists at a time and a newly authenticated sender replaces the previous one. Do not run `scripts/test-sender.py` while the real Windows sender is connected |
 | Windows says "not paired with this Mac yet" | The Mac has no key for this PC. Press *Show pairing code* on the Mac, then *Pair* on Windows |
+| It asks to pair again after the address changed | It should not any more: the device key is filed under an identity the Mac sends in its handshake, not under the address you typed, so switching between an address and a `.local` name keeps the pairing. A build older than 0.3.2 on either side filed it under the address |
 | "the Mac is not in pairing mode" | The code expires after three minutes and is consumed by a successful pairing. Generate a new one |
 | "Connection timed out", and nothing else changed | The Mac almost certainly has a new address from DHCP. Press **Find** and pick it again, and this time take the `.local` name rather than the address: that one survives the next lease |
 | Find turns up nothing | Both machines must be on the same subnet, and the probe is a broadcast — some access points block those between wireless clients ("client isolation" or "AP isolation"). The address still works when typed in by hand |

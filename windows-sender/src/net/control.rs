@@ -233,7 +233,16 @@ pub fn connect(
         .filter(|n| n.len() == 32)
         .ok_or_else(|| ConnectError::Protocol("HELLO_ACK carries no usable nonce".into()))?;
 
-    let stored_key = keys.device_key(&cfg.mac_host);
+    // Filed under the Mac's own identity rather than the address it was reached at. An address is
+    // not an identity: a new DHCP lease, or switching from 192.168.1.5 to the .local name, used to
+    // make an already-paired Mac look like a stranger and ask for the pairing code again.
+    let key_index =
+        if ack.server_id.is_empty() { cfg.mac_host.clone() } else { ack.server_id.clone() };
+    let stored_key = keys
+        .device_key(&key_index)
+        // Anything paired before the Mac had an identity is still filed under the address, and is
+        // moved across the first time it authenticates.
+        .or_else(|| keys.device_key(&cfg.mac_host));
     // `freshly_paired` decides whether the key is persisted after AUTH_OK. Storing it earlier is
     // what allows the two sides to diverge: if authentication never completes, one machine ends
     // up holding a key the other has never heard of, and every later attempt fails with no way
@@ -274,13 +283,22 @@ pub fn connect(
         return Err(ConnectError::Protocol("the Mac failed to prove it holds our device key".into()));
     }
 
-    if freshly_paired {
+    // Also stored when nothing was freshly paired but the key was found under the old address-keyed
+    // entry: that is the migration, and it costs one write, once.
+    let needs_filing = freshly_paired || keys.device_key(&key_index).is_none();
+    if needs_filing {
         // Both sides have now proven they hold the same key, so it is safe to keep.
-        keys.set_device_key(&cfg.mac_host, &device_key);
+        keys.set_device_key(&key_index, &device_key);
         if let Err(e) = keys.save() {
             crate::log::warn(&format!("could not persist the device key: {e}"));
         }
-        crate::log::info("paired successfully; the code is not needed again");
+        if freshly_paired {
+            crate::log::info("paired successfully; the code is not needed again");
+        } else {
+            crate::log::info(
+                "this Mac now has a stable identity; the pairing will survive a change of address",
+            );
+        }
     }
 
     let (tcp_key, udp_key) = crypto::session_keys(&device_key, &client_nonce, &server_nonce);

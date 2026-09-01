@@ -25,7 +25,7 @@ final class AppModel: ObservableObject, ControlServerDelegate {
     private let realtime: RealtimeReceiver
     private let control: ControlServer
     private let discovery = DiscoveryResponder()
-    private var keyStore = KeyStore.load()
+    private var keyStore = KeyStore.loadWithIdentity()
 
     private var senderWantsEdgeSwitch = false
     private var lastEdgeHit = Date.distantPast

@@ -358,6 +358,7 @@ final class ControlServer {
             "t": "HELLO_ACK",
             "protocol_version": Proto.version,
             "server_name": config.deviceName,
+            "server_id": keyStore.serverID,
             "server_nonce": peer.serverNonce.hexString,
             "known_client": peer.deviceKey != nil,
             "pairing_mode": pairingActive,
