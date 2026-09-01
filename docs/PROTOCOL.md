@@ -14,6 +14,41 @@ only echoed back for RTT measurement.
 
 ---
 
+## 0. Discovery (UDP 47823)
+
+Optional, unauthenticated, and outside the session: it exists so nobody has to type an address that
+a DHCP lease will change.
+
+**Probe** (Windows → directed broadcast of every local subnet, and 255.255.255.255):
+
+| Offset | Size | Value |
+|--------|------|-------|
+| 0 | 4 | magic `RIBD` (0x52494244) |
+| 4 | 1 | version, currently 1 |
+| 5 | 251 | zero padding |
+
+The padding is not decoration. A short probe with a long reply is a reflection amplifier — spoof
+the source address and every responder helps flood a third party — so a probe shorter than 256
+bytes is ignored, and a reply that would exceed the probe is not sent.
+
+The limited broadcast alone is not enough: it follows the default route, and a VPN holding that
+route makes it fail with "no route to host". The sender therefore enumerates its own interfaces and
+sends to each subnet's directed broadcast as well.
+
+**Reply** (Mac → the address that probed):
+
+| Offset | Size | Value |
+|--------|------|-------|
+| 0 | 4 | magic `RIBD` |
+| 4 | 1 | version, currently 1 |
+| 5 | … | JSON: `name`, `host` (the `.local` name, may be empty), `tcp`, `udp`, `version` |
+
+Discovery conveys no authority. It reveals a name and two port numbers that a port scan would have
+found anyway, and a sender still has to pair with a code shown on the Mac before it can send a
+single event.
+
+---
+
 ## 1. Key hierarchy
 
 ```

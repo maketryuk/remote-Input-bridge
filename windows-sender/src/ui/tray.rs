@@ -9,8 +9,9 @@ use windows_sys::Win32::UI::Shell::{
     NOTIFYICONDATAW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, SetForegroundWindow, TrackPopupMenu,
-    MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING, TPM_LEFTALIGN, TPM_RIGHTBUTTON,
+    AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, PostMessageW, RegisterWindowMessageW,
+    SetForegroundWindow, TrackPopupMenu, MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING,
+    TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_NULL,
 };
 
 use crate::config::MOUSE_INTERVAL_CHOICES_MS;
@@ -21,6 +22,37 @@ pub const TRAY_ID: u32 = 1;
 pub const TRAY_CALLBACK_MSG: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 1;
 
 static PRESENT: AtomicBool = AtomicBool::new(false);
+/// Id of the shell's "TaskbarCreated" broadcast, resolved once.
+static TASKBAR_CREATED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The message the shell broadcasts to every top-level window when it creates the task bar - at
+/// logon, and again whenever Explorer restarts.
+///
+/// This matters most for an app started from the Run key: it can easily be running before the
+/// shell is, in which case the icon it added belongs to a task bar that no longer exists. The
+/// entry left behind looks like an icon and answers no clicks, which is exactly what "the tray
+/// icon is broken and so is its menu" looks like from the outside.
+pub fn taskbar_created_message() -> u32 {
+    let cached = TASKBAR_CREATED.load(Relaxed);
+    if cached != 0 {
+        return cached;
+    }
+    let name: Vec<u16> = "TaskbarCreated".encode_utf16().chain(std::iter::once(0)).collect();
+    let id = unsafe { RegisterWindowMessageW(name.as_ptr()) };
+    TASKBAR_CREATED.store(id, Relaxed);
+    id
+}
+
+/// Puts the icon back after the shell has replaced the task bar under us.
+pub fn readd(hwnd: HWND) {
+    // Removing first is deliberate: the old entry may or may not still exist, and NIM_DELETE on
+    // something that is already gone is harmless, while NIM_ADD over a live entry is not.
+    let data = base(hwnd);
+    unsafe { Shell_NotifyIconW(NIM_DELETE, &data) };
+    PRESENT.store(false, Relaxed);
+    add(hwnd);
+    crate::log::info("the shell rebuilt the task bar; the tray icon was added again");
+}
 
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
@@ -47,19 +79,30 @@ pub fn add(hwnd: HWND) {
     let mut data = base(hwnd);
     set_tip(&mut data, "Remote Input Bridge");
     if unsafe { Shell_NotifyIconW(NIM_ADD, &data) } == 0 {
-        crate::log::warn("could not create the tray icon");
+        // Not a warning: at logon this simply means the shell is not up yet, and the
+        // TaskbarCreated broadcast will tell us when it is.
+        crate::log::info("no tray icon yet; waiting for the shell to announce the task bar");
     } else {
         PRESENT.store(true, Relaxed);
     }
 }
 
+/// Called from the UI timer, which makes it the natural place to keep trying: an icon that could
+/// not be added at logon, or one the shell dropped without announcing it, comes back within half a
+/// second instead of staying missing until the app is restarted.
 pub fn update(hwnd: HWND, tooltip: &str) {
     if !PRESENT.load(Relaxed) {
+        add(hwnd);
         return;
     }
     let mut data = base(hwnd);
     set_tip(&mut data, tooltip);
-    unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) };
+    if unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) } == 0 {
+        // The entry is gone even though we believe it is there. Say so once and let the next tick
+        // add it back.
+        PRESENT.store(false, Relaxed);
+        crate::log::info("the tray icon disappeared; adding it again");
+    }
 }
 
 pub fn remove(hwnd: HWND) {
@@ -126,7 +169,10 @@ pub fn show_menu(hwnd: HWND) {
         item(MF_SEPARATOR, 0, "");
         item(MF_STRING, cmd::QUIT, "Quit");
 
-        // A tray menu only dismisses correctly if the owner window is foreground first.
+        // A tray menu only dismisses correctly if the owner window is foreground first, and only
+        // behaves afterwards if the owner is given a message to chew on - without the WM_NULL the
+        // menu can survive the click that should have closed it. Both halves are needed; this app
+        // usually has no visible window, which is the case they were documented for.
         SetForegroundWindow(hwnd);
         let mut point = POINT { x: 0, y: 0 };
         GetCursorPos(&mut point);
@@ -139,6 +185,7 @@ pub fn show_menu(hwnd: HWND) {
             hwnd,
             ptr::null(),
         );
+        PostMessageW(hwnd, WM_NULL, 0, 0);
         DestroyMenu(menu);
     }
 }

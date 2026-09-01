@@ -24,6 +24,7 @@ final class AppModel: ObservableObject, ControlServerDelegate {
     private let scheduler: EventScheduler
     private let realtime: RealtimeReceiver
     private let control: ControlServer
+    private let discovery = DiscoveryResponder()
     private var keyStore = KeyStore.load()
 
     private var senderWantsEdgeSwitch = false
@@ -85,6 +86,12 @@ final class AppModel: ObservableObject, ControlServerDelegate {
         control.update(config: config)
         control.start()
         realtime.start(port: config.udpPort)
+        // Reads the description at answer time, so renaming this Mac or changing a port needs no
+        // restart of anything.
+        discovery.start { [weak self] in
+            let config = self?.config ?? Config()
+            return (config.deviceName, config.tcpPort, config.udpPort)
+        }
         startTimers()
         refreshStatus()
     }
@@ -92,6 +99,7 @@ final class AppModel: ObservableObject, ControlServerDelegate {
     func stop(reason: String = "receiver disabled") {
         control.stop(reason: reason)
         realtime.stop()
+        discovery.stop()
         scheduler.stop()
         injector.releaseAll(reason: reason)
         inputActive = false

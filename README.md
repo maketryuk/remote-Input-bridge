@@ -190,9 +190,14 @@ cargo test                                    # 30 unit tests, host-native
 1. **Mac** — open the app. If Accessibility permission is missing it says so and offers a button
    to System Settings; grant it to *RemoteInputBridge* and the warning disappears within two
    seconds. Then choose **Show pairing code** from the menu bar item.
-2. **Windows** — start `rib-sender.exe`, open **Status and settings…** from the tray icon, fill in
-   the Mac's IP address, type the pairing code, press **Pair**. The code is needed once; the
-   device key is stored in `%APPDATA%\RemoteInputBridge\keys.json`.
+2. **Windows** — start `rib-sender.exe`, open **Status and settings…** from the tray icon, press
+   **Find** beside the address field and pick the Mac from the list, type the pairing code, press
+   **Pair**. The code is needed once; the device key is stored in
+   `%APPDATA%\RemoteInputBridge\keys.json`.
+
+   Find offers each Mac twice: by its `.local` name and by the address that answered. Prefer the
+   name — it still works after the router hands out a different lease, which is the usual reason a
+   bridge that worked yesterday reports a connection timeout today.
 3. Press `Ctrl+Alt+←`. The tray status and the menu bar icon both switch to "Mac".
 
 Nothing about this needs an account or a cloud service. The bridge itself never touches the
@@ -307,6 +312,12 @@ The bridge carries everything you type. What that means in practice:
   `github.com`, sending a user agent of the form `RemoteInputBridge/0.2.0 (Windows)` and nothing
   else. GitHub sees your IP address, as it would for any download. Turn the check off and neither
   app opens a socket to anything but the machine you paired with.
+* **Discovery answers anyone on your network.** Press Find and the sender broadcasts a probe;
+  every receiver that hears it replies with its name, its `.local` name and its two port numbers.
+  That is all it reveals, to people who are already on your network and could have found the ports
+  with a scan, and it grants nothing — pairing still needs the code shown on the Mac. The reply is
+  deliberately smaller than the probe so that answering it is useless to anyone trying to bounce
+  traffic off your machines.
 * **Your settings and keys stay local**: `%APPDATA%\RemoteInputBridge\` on Windows,
   `~/Library/Application Support/RemoteInputBridge/` on the Mac. Neither is included in anything the
   apps send, and the Windows uninstaller asks before deleting them.
@@ -368,6 +379,8 @@ These are deliberate MVP boundaries, not bugs:
 | The receiver keeps swapping between two senders | Only one session exists at a time and a newly authenticated sender replaces the previous one. Do not run `scripts/test-sender.py` while the real Windows sender is connected |
 | Windows says "not paired with this Mac yet" | The Mac has no key for this PC. Press *Show pairing code* on the Mac, then *Pair* on Windows |
 | "the Mac is not in pairing mode" | The code expires after three minutes and is consumed by a successful pairing. Generate a new one |
+| "Connection timed out", and nothing else changed | The Mac almost certainly has a new address from DHCP. Press **Find** and pick it again, and this time take the `.local` name rather than the address: that one survives the next lease |
+| Find turns up nothing | Both machines must be on the same subnet, and the probe is a broadcast — some access points block those between wireless clients ("client isolation" or "AP isolation"). The address still works when typed in by hand |
 | Connects, then drops every second | Heartbeat timeout: the Mac is not seeing frames. Check the firewall on the Mac and that TCP 47821 is reachable |
 | Cursor moves but far too slowly or quickly | Pointer speed on the Mac (Settings → Pointer). Windows sends raw counts, so Windows pointer speed has no effect by design |
 | `rtt` above ~5 ms on a LAN | That is the link, not the app. Roughly 20 ms round trip and bursts of 28 % loss were measured on a 5 GHz Wi-Fi link two metres from the access point; the same setup over Ethernet sits under 1 ms. Nothing in the app can hide 20 ms |

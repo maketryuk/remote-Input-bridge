@@ -3,6 +3,7 @@
 //! messages on an unbounded channel.
 
 pub mod control;
+pub mod discovery;
 pub mod realtime;
 
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};

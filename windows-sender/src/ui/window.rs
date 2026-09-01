@@ -325,7 +325,20 @@ fn build_controls(parent: HWND) {
     y += 44;
 
     add_control(parent, "STATIC", "Mac IP or host name", 0, LABEL_X, y + 3, LABEL_W, 20, 0);
-    add_control(parent, "EDIT", "", edit_style, FIELD_X, y, FIELD_W, 22, ID_HOST);
+    // A dropdown rather than a plain field: it still takes anything typed into it, and Find fills
+    // the list with whatever answered on the network. The height is the dropped-down height.
+    add_control(
+        parent,
+        "COMBOBOX",
+        "",
+        WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWN as u32 | CBS_AUTOHSCROLL as u32,
+        FIELD_X,
+        y,
+        180,
+        160,
+        ID_HOST,
+    );
+    add_control(parent, "BUTTON", "Find", WS_TABSTOP, FIELD_X + 186, y - 1, 92, 24, cmd::FIND_MACS);
     y += ROW;
     add_control(parent, "STATIC", "TCP port (control)", 0, LABEL_X, y + 3, LABEL_W, 20, 0);
     add_control(
@@ -533,7 +546,10 @@ fn refresh_status(parent: HWND) {
         ),
     );
     let info = st.status.lock().unwrap();
-    let message = if info.pairing_required {
+    let message = if let Some(found) = crate::net::discovery::message() {
+        // The most recent thing the user asked for, so it wins the line for a few seconds.
+        found
+    } else if info.pairing_required {
         format!("Pairing required. {}", info.last_error)
     } else if !info.last_error.is_empty() && st.link() != LinkState::Connected {
         info.last_error.clone()
@@ -550,6 +566,26 @@ fn refresh_status(parent: HWND) {
     if let Some((control, text)) = crate::input::take_capture() {
         set_text(parent, control, &text);
     }
+    if let Some(hosts) = crate::net::discovery::take_found() {
+        // Refilling the list clears the edit field on some Windows builds, so what the user had
+        // typed is put back - unless they had nothing, in which case the best candidate is used.
+        let typed = get_text(parent, ID_HOST).trim().to_string();
+        let combo = control(parent, ID_HOST);
+        if !combo.is_null() {
+            unsafe { SendMessageW(combo, CB_RESETCONTENT, 0, 0) };
+            for host in &hosts {
+                let text = wide(host);
+                unsafe { SendMessageW(combo, CB_ADDSTRING, 0, text.as_ptr() as LPARAM) };
+            }
+        }
+        let chosen = if typed.is_empty() { hosts.first().cloned().unwrap_or_default() } else { typed };
+        set_text(parent, ID_HOST, &chosen);
+    }
+    set_text(
+        parent,
+        cmd::FIND_MACS,
+        if crate::net::discovery::is_searching() { "Looking..." } else { "Find" },
+    );
     for (index, field) in [ID_HOTKEY_MAC, ID_HOTKEY_WINDOWS, ID_HOTKEY_EMERGENCY]
         .into_iter()
         .enumerate()
@@ -694,6 +730,10 @@ fn handle_command(parent: HWND, id: u32) {
             }
             refresh_status(parent);
         }
+        cmd::FIND_MACS => {
+            crate::net::discovery::start_search(crate::net::discovery::DEFAULT_DISCOVERY_PORT);
+            refresh_status(parent);
+        }
         cmd::OPEN_CONFIG_DIR => open_config_dir(),
         cmd::CHECK_UPDATES => {
             // The same button installs what a previous check found, so the common case is one
@@ -758,6 +798,11 @@ unsafe extern "system" fn wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    // Registered at runtime, so it cannot be a match arm.
+    if message != 0 && message == tray::taskbar_created_message() {
+        tray::readd(window);
+        return 0;
+    }
     match message {
         WM_CREATE => {
             build_controls(window);

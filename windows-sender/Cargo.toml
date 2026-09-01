@@ -1,6 +1,6 @@
 [package]
 name = "rib-sender"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 description = "Remote Input Bridge - Windows sender"
 license = "MIT"
@@ -24,7 +24,10 @@ windows-sys = { version = "0.60", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_Media",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
     "Win32_Networking_WinHttp",
+    "Win32_Networking_WinSock",
     "Win32_Security",
     "Win32_System_Console",
     "Win32_System_LibraryLoader",
